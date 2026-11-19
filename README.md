@@ -6,8 +6,7 @@ A VEGAS Pro Script API utility for copying selected audio and video fragments ac
 
 ```text
 chorus-generator/
-├── src/
-│   └── chorus-generator.cs
+├── chorus-generator.cs
 └── README.md
 ```
 
