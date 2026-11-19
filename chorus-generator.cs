@@ -4,40 +4,33 @@ using System.Globalization;
 using System.Windows.Forms;
 using ScriptPortal.Vegas;
 
-/// <summary>
-/// Скрипт вставки до четырех выделенных видео-фрагментов
-/// по пользовательскому ритмическому шаблону.
-/// </summary>
-public class EntryPoint
-{
-    #region Configuration
+#region Configuration
 
+/// <summary>
+/// Main entry point for the VEGAS Pro scripting API.
+/// </summary>
+public partial class EntryPoint
+{
     /// <summary>
-    /// BPM проекта по умолчанию.
+    /// Default BPM used when no valid project BPM marker is found.
     /// </summary>
     private const double DEFAULT_BPM = 120.0;
 
     /// <summary>
-    /// Количество долей в такте.
-    /// Для размера 4/4 значение равно 4.
+    /// Number of beats in one bar.
     /// </summary>
     private const int BEATS_PER_BAR = 4;
 
     /// <summary>
-    /// Количество базовых шагов сетки в одном такте.
-    /// BASE_GRID_DIVISIONS = 16 означает сетку в одну 16-долю.
+    /// Number of base grid steps in one bar.
     /// </summary>
     private const int BASE_GRID_DIVISIONS = 16;
 
-    #endregion
-
-    #region VEGAS entry point
-
     /// <summary>
-    /// Основная точка входа скрипта VEGAS.
+    /// Entry point called by VEGAS when the script is launched.
     /// </summary>
     /// <param name="vegas">
-    /// Текущий объект проекта VEGAS.
+    /// The active VEGAS application and project object.
     /// </param>
     public void FromVegas(Vegas vegas)
     {
@@ -49,7 +42,7 @@ public class EntryPoint
             if (selectedEvents.Length == 0)
             {
                 MessageBox.Show(
-                    "Выделите от одного до четырех видео-событий.",
+                    "Select one to four video events.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -60,7 +53,7 @@ public class EntryPoint
             if (selectedEvents.Length > 4)
             {
                 MessageBox.Show(
-                    "Выделено больше четырех видео-событий.",
+                    "More than four video events are selected.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -90,7 +83,7 @@ public class EntryPoint
                 CalculateBaseGridStep(vegas);
 
             using (UndoBlock undo = new UndoBlock(
-                "Вставить паттерн " + pattern))
+                "Insert pattern " + pattern))
             {
                 InsertPattern(
                     selectedEvents,
@@ -109,20 +102,14 @@ public class EntryPoint
         }
     }
 
-    #endregion
-
-    #region Selected events
-
     /// <summary>
-    /// Находит выделенные видео-события на всех треках.
+    /// Finds selected video events and orders them left to right.
     /// </summary>
     /// <param name="vegas">
-    /// Текущий объект проекта VEGAS.
+    /// The active VEGAS application object.
     /// </param>
     /// <returns>
-    /// Массив выделенных событий, отсортированных слева направо.
-    /// Первый элемент соответствует символу 1,
-    /// второй — символу 2 и т. д.
+    /// Selected video events ordered by timeline position.
     /// </returns>
     private TrackEvent[] FindSelectedVideoEvents(Vegas vegas)
     {
@@ -149,51 +136,58 @@ public class EntryPoint
                 TrackEvent first,
                 TrackEvent second)
             {
-                return first.Start.Nanos.CompareTo(
-                    second.Start.Nanos);
+                return first.Start.ToMilliseconds()
+                    .CompareTo(
+                        second.Start.ToMilliseconds());
             });
 
         return selectedEvents.ToArray();
     }
 
     /// <summary>
-    /// Определяет начало исходного сегмента.
+    /// Gets the start of the source segment.
     /// </summary>
     /// <param name="vegas">
-    /// Текущий объект проекта VEGAS.
+    /// The active VEGAS application object.
     /// </param>
     /// <param name="selectedEvents">
-    /// Выделенные слева направо события.
+    /// Selected video events ordered by timeline position.
     /// </param>
     /// <returns>
-    /// Левую границу выделения или начало первого выделенного события.
+    /// The selection start or the start of the first selected event.
     /// </returns>
     private Timecode GetSegmentStart(
         Vegas vegas,
         TrackEvent[] selectedEvents)
     {
-        if (vegas.SelectionLength.Nanos > 0)
+        if (vegas.SelectionLength.ToMilliseconds() > 0)
             return vegas.SelectionStart;
 
         return selectedEvents[0].Start;
     }
+}
 
-    #endregion
+#endregion
 
-    #region Grid and BPM
+#region Grid and BPM
 
+/// <summary>
+/// Provides project BPM and grid calculation helpers.
+/// </summary>
+public partial class EntryPoint
+{
     /// <summary>
-    /// Получает BPM проекта из маркера формата BPM=значение.
+    /// Reads project BPM from a marker named <c>BPM=value</c>.
     /// </summary>
     /// <param name="vegas">
-    /// Текущий объект проекта VEGAS.
+    /// The active VEGAS application object.
     /// </param>
     /// <returns>
-    /// Найденное значение BPM или DEFAULT_BPM.
+    /// The project BPM or <see cref="DEFAULT_BPM"/>.
     /// </returns>
     /// <example>
-    /// Для установки темпа создайте маркер с названием:
-    /// BPM=128
+    /// Create a project marker named:
+    /// <code>BPM=128</code>
     /// </example>
     private double GetProjectBpm(Vegas vegas)
     {
@@ -206,8 +200,8 @@ public class EntryPoint
                 marker.Label.Trim();
 
             if (!label.StartsWith(
-                    "BPM=",
-                    StringComparison.OrdinalIgnoreCase))
+                "BPM=",
+                StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -229,14 +223,13 @@ public class EntryPoint
     }
 
     /// <summary>
-    /// Рассчитывает длительность базового шага сетки.
-    /// Базовый шаг представляет одну 16-долю при 4/4.
+    /// Calculates the duration of one base grid step.
     /// </summary>
     /// <param name="vegas">
-    /// Текущий объект проекта VEGAS.
+    /// The active VEGAS application object.
     /// </param>
     /// <returns>
-    /// Длительность одного базового шага сетки.
+    /// Duration of one base grid step.
     /// </returns>
     private Timecode CalculateBaseGridStep(Vegas vegas)
     {
@@ -246,7 +239,7 @@ public class EntryPoint
         if (bpm <= 0)
         {
             throw new InvalidOperationException(
-                "BPM должен быть больше нуля.");
+                "BPM must be greater than zero.");
         }
 
         double quarterSeconds =
@@ -258,27 +251,33 @@ public class EntryPoint
         double stepSeconds =
             barSeconds / BASE_GRID_DIVISIONS;
 
-        return Timecode.FromSeconds(stepSeconds);
+        return Timecode.FromMilliseconds(
+            stepSeconds * 1000.0);
     }
+}
 
-    #endregion
+#endregion
 
-    #region Pattern parser
+#region Pattern parser
 
+/// <summary>
+/// Provides pattern validation and duration calculation.
+/// </summary>
+public partial class EntryPoint
+{
     /// <summary>
-    /// Проверяет синтаксис ритмического шаблона.
-    /// Допустимая грамматика:
-    /// _ | [1-4] [* или /]*.
+    /// Validates a pattern against the source event count.
     /// </summary>
     /// <param name="pattern">
-    /// Строка шаблона.
+    /// Pattern containing event numbers, underscores,
+    /// asterisks, and slashes.
     /// </param>
     /// <param name="eventCount">
-    /// Количество выделенных фрагментов.
+    /// Number of selected source events.
     /// </param>
     /// <exception cref="ArgumentException">
-    /// Возникает при пустом шаблоне, недопустимом символе,
-    /// смешении символов * и / или отсутствии указанного фрагмента.
+    /// The pattern is empty or contains an invalid symbol,
+    /// mixed modifiers, or an unavailable event number.
     /// </exception>
     private void ValidatePattern(
         string pattern,
@@ -287,7 +286,7 @@ public class EntryPoint
         if (String.IsNullOrEmpty(pattern))
         {
             throw new ArgumentException(
-                "Паттерн не может быть пустым.");
+                "The pattern cannot be empty.");
         }
 
         int index = 0;
@@ -303,12 +302,13 @@ public class EntryPoint
                 continue;
             }
 
-            if (symbol < '1' || symbol > '4')
+            if (symbol < '1' ||
+                symbol > '4')
             {
                 throw new ArgumentException(
-                    "Недопустимый символ '" +
+                    "Invalid symbol '" +
                     symbol +
-                    "'. Ожидались цифры 1–4 или символ _.");
+                    "'. Use 1-4 or underscore.");
             }
 
             int eventNumber =
@@ -317,11 +317,11 @@ public class EntryPoint
             if (eventNumber > eventCount)
             {
                 throw new ArgumentException(
-                    "Паттерн использует фрагмент " +
+                    "The pattern uses event " +
                     eventNumber +
-                    ", но выделено только " +
+                    ", but only " +
                     eventCount +
-                    ".");
+                    " event(s) are selected.");
             }
 
             index++;
@@ -342,8 +342,7 @@ public class EntryPoint
                 else if (modifier != currentModifier)
                 {
                     throw new ArgumentException(
-                        "Нельзя смешивать символы * и / " +
-                        "в одном фрагменте.");
+                        "A fragment cannot mix * and / modifiers.");
                 }
 
                 index++;
@@ -352,78 +351,75 @@ public class EntryPoint
     }
 
     /// <summary>
-    /// Рассчитывает длительность фрагмента.
-    /// Каждый символ * удваивает базовую длительность.
-    /// Каждый символ / уменьшает базовую длительность вдвое.
+    /// Calculates an event duration.
     /// </summary>
-    /// <param name="baseStepSeconds">
-    /// Длительность базового шага сетки.
+    /// <param name="baseStepMilliseconds">
+    /// Duration of the base grid step.
     /// </param>
-    /// <param name="starCount">
-    /// Количество символов *.
+    /// <param name="asteriskCount">
+    /// Number of * modifiers.
     /// </param>
     /// <param name="slashCount">
-    /// Количество символов /.
+    /// Number of / modifiers.
     /// </param>
     /// <returns>
-    /// Длительность фрагмента в секундах.
+    /// Calculated duration in milliseconds.
     /// </returns>
-    private double CalculateDurationSeconds(
-        double baseStepSeconds,
-        int starCount,
+    private double CalculateDurationMilliseconds(
+        double baseStepMilliseconds,
+        int asteriskCount,
         int slashCount)
     {
         double multiplier =
             Math.Pow(
                 2.0,
-                starCount - slashCount);
+                asteriskCount - slashCount);
 
         double duration =
-            baseStepSeconds * multiplier;
+            baseStepMilliseconds * multiplier;
 
         if (duration <= 0)
         {
             throw new InvalidOperationException(
-                "Длительность фрагмента неположительная.");
+                "The fragment duration is not positive.");
         }
 
         return duration;
     }
+}
 
-    #endregion
+#endregion
 
-    #region Insert pattern
+#region Pattern insertion
 
+/// <summary>
+/// Inserts copied events according to a parsed pattern.
+/// </summary>
+public partial class EntryPoint
+{
     /// <summary>
-    /// Вставляет выделенные фрагменты согласно паттерну.
+    /// Inserts source events according to the supplied pattern.
     /// </summary>
     /// <param name="selectedEvents">
-    /// События от одного до четырех,
-    /// отсортированные слева направо.
+    /// Source events ordered from left to right.
     /// </param>
     /// <param name="segmentStart">
-    /// Начало исходного сегмента или выделенного диапазона.
+    /// Start of the source segment.
     /// </param>
     /// <param name="baseStep">
-    /// Длительность базового шага сетки.
+    /// Duration of one base grid step.
     /// </param>
     /// <param name="pattern">
-    /// Строка ритмического шаблона.
+    /// Pattern such as <c>1_2_</c> or <c>11_11_111_</c>.
     /// </param>
-    /// <remarks>
-    /// Символы 1–4 выбирают источник,
-    /// символ * удваивает длительность,
-    /// символ / уменьшает длительность,
-    /// символ _ пропускает один базовый шаг.
-    /// </remarks>
     private void InsertPattern(
         TrackEvent[] selectedEvents,
         Timecode segmentStart,
         Timecode baseStep,
         string pattern)
     {
-        double cursorSeconds =
-            segmentStart.ToSeconds();
+        double cursorMilliseconds =
+            segmentStart.ToMilliseconds();
 
         int index = 0;
 
@@ -434,8 +430,8 @@ public class EntryPoint
 
             if (symbol == '_')
             {
-                cursorSeconds +=
-                    baseStep.ToSeconds();
+                cursorMilliseconds +=
+                    baseStep.ToMilliseconds();
 
                 index++;
                 continue;
@@ -449,7 +445,7 @@ public class EntryPoint
 
             index++;
 
-            int starCount = 0;
+            int asteriskCount = 0;
             int slashCount = 0;
 
             while (index < pattern.Length &&
@@ -457,24 +453,26 @@ public class EntryPoint
                     pattern[index] == '/'))
             {
                 if (pattern[index] == '*')
-                    starCount++;
+                    asteriskCount++;
                 else
                     slashCount++;
 
                 index++;
             }
 
-            double durationSeconds =
-                CalculateDurationSeconds(
-                    baseStep.ToSeconds(),
-                    starCount,
+            double durationMilliseconds =
+                CalculateDurationMilliseconds(
+                    baseStep.ToMilliseconds(),
+                    asteriskCount,
                     slashCount);
 
             Timecode copyStart =
-                Timecode.FromSeconds(cursorSeconds);
+                Timecode.FromMilliseconds(
+                    cursorMilliseconds);
 
             Timecode copyLength =
-                Timecode.FromSeconds(durationSeconds);
+                Timecode.FromMilliseconds(
+                    durationMilliseconds);
 
             TrackEvent copy =
                 sourceEvent.Copy(
@@ -491,22 +489,22 @@ public class EntryPoint
 
             copy.Selected = true;
 
-            cursorSeconds +=
-                durationSeconds;
+            cursorMilliseconds +=
+                durationMilliseconds;
         }
     }
 
     /// <summary>
-    /// Настраивает смещение активного take скопированного события.
+    /// Sets the media offset of a copied event.
     /// </summary>
     /// <param name="sourceEvent">
-    /// Исходное выделенное событие.
+    /// Source selected event.
     /// </param>
     /// <param name="copy">
-    /// Скопированное событие.
+    /// Copied event.
     /// </param>
     /// <param name="segmentStart">
-    /// Начало исходного сегмента.
+    /// Start of the source segment.
     /// </param>
     private void SetCopyTakeOffset(
         TrackEvent sourceEvent,
@@ -526,44 +524,46 @@ public class EntryPoint
         }
 
         double relativeOffset =
-            sourceEvent.Start.ToSeconds() -
-            segmentStart.ToSeconds();
+            sourceEvent.Start.ToMilliseconds() -
+            segmentStart.ToMilliseconds();
 
         if (relativeOffset < 0)
             relativeOffset = 0;
 
         copyTake.Offset =
-            Timecode.FromSeconds(
-                sourceTake.Offset.ToSeconds() +
+            Timecode.FromMilliseconds(
+                sourceTake.Offset.ToMilliseconds() +
                 relativeOffset);
     }
-
-    #endregion
 }
 
+#endregion
+
+#region Built-in patterns
+
 /// <summary>
-/// Описание готового ритмического шаблона.
+/// Represents a named built-in pattern.
 /// </summary>
 public class PatternDefinition
 {
     /// <summary>
-    /// Название шаблона для отображения в интерфейсе.
+    /// Display name of the pattern.
     /// </summary>
     public string Name { get; private set; }
 
     /// <summary>
-    /// Строка шаблона.
+    /// Pattern expression.
     /// </summary>
     public string Value { get; private set; }
 
     /// <summary>
-    /// Создает описание шаблона.
+    /// Creates a pattern definition.
     /// </summary>
     /// <param name="name">
-    /// Название шаблона.
+    /// Display name.
     /// </param>
     /// <param name="value">
-    /// Строка шаблона.
+    /// Pattern expression.
     /// </param>
     public PatternDefinition(
         string name,
@@ -574,10 +574,10 @@ public class PatternDefinition
     }
 
     /// <summary>
-    /// Возвращает название шаблона для ComboBox.
+    /// Returns the pattern name for display controls.
     /// </summary>
     /// <returns>
-    /// Название шаблона.
+    /// The pattern name.
     /// </returns>
     public override string ToString()
     {
@@ -586,15 +586,15 @@ public class PatternDefinition
 }
 
 /// <summary>
-/// Библиотека встроенных ритмических шаблонов.
+/// Provides built-in chorus and rhythmic patterns.
 /// </summary>
 public static class PatternLibrary
 {
     /// <summary>
-    /// Возвращает готовые шаблоны.
+    /// Gets the built-in pattern list.
     /// </summary>
     /// <returns>
-    /// Список шаблонов для ComboBox.
+    /// Available pattern definitions.
     /// </returns>
     public static List<PatternDefinition> GetPatterns()
     {
@@ -605,38 +605,42 @@ public static class PatternLibrary
                 "11_11_111_1_1_11222_2_222_222_2_"),
 
             new PatternDefinition(
-                "Чередование 1 и 2",
+                "Alternate 1 and 2",
                 "1_2_"),
 
             new PatternDefinition(
-                "Два фрагмента подряд",
+                "Two events consecutively",
                 "12"),
 
             new PatternDefinition(
-                "Четыре фрагмента",
+                "Four events consecutively",
                 "1234"),
 
             new PatternDefinition(
-                "Четыре фрагмента через шаг",
+                "Four events with skips",
                 "1_2_3_4_"),
 
             new PatternDefinition(
-                "Длинный первый фрагмент",
+                "Long first event",
                 "1**_2"),
 
             new PatternDefinition(
-                "Короткий второй фрагмент",
+                "Short second event",
                 "1_2/"),
 
             new PatternDefinition(
-                "Двойной первый и одинарный второй",
-                "1*__2")
+                "Double first and short second",
+                "1*__2/")
         };
     }
 }
 
+#endregion
+
+#region Pattern selector
+
 /// <summary>
-/// Окно выбора готового шаблона или ввода пользовательского шаблона.
+/// Window for selecting a built-in pattern or entering a custom pattern.
 /// </summary>
 public class PatternSelectorForm : Form
 {
@@ -644,11 +648,11 @@ public class PatternSelectorForm : Form
     private RadioButton customRadioButton;
     private ComboBox presetComboBox;
     private TextBox patternTextBox;
-    private Button selectButton;
+    private Button insertButton;
     private Button cancelButton;
 
     /// <summary>
-    /// Создает окно выбора ритмического шаблона.
+    /// Creates the pattern selector window.
     /// </summary>
     public PatternSelectorForm()
     {
@@ -663,34 +667,33 @@ public class PatternSelectorForm : Form
         MinimizeBox = false;
 
         presetRadioButton =
-            new RadioButton();
-
-        presetRadioButton.Text =
-            "Готовый шаблон";
-
-        presetRadioButton.Left = 15;
-        presetRadioButton.Top = 15;
-        presetRadioButton.Width = 180;
-        presetRadioButton.Checked = true;
+            new RadioButton
+            {
+                Text = "Built-in pattern",
+                Left = 15,
+                Top = 15,
+                Width = 180,
+                Checked = true
+            };
 
         customRadioButton =
-            new RadioButton();
-
-        customRadioButton.Text =
-            "Ввести свой шаблон";
-
-        customRadioButton.Left = 15;
-        customRadioButton.Top = 50;
-        customRadioButton.Width = 180;
+            new RadioButton
+            {
+                Text = "Enter a custom pattern",
+                Left = 15,
+                Top = 50,
+                Width = 180
+            };
 
         presetComboBox =
-            new ComboBox();
-
-        presetComboBox.Left = 200;
-        presetComboBox.Top = 12;
-        presetComboBox.Width = 320;
-        presetComboBox.DropDownStyle =
-            ComboBoxStyle.DropDownList;
+            new ComboBox
+            {
+                Left = 200,
+                Top = 12,
+                Width = 320,
+                DropDownStyle =
+                    ComboBoxStyle.DropDownList
+            };
 
         foreach (PatternDefinition pattern
             in PatternLibrary.GetPatterns())
@@ -702,47 +705,46 @@ public class PatternSelectorForm : Form
             presetComboBox.SelectedIndex = 0;
 
         patternTextBox =
-            new TextBox();
-
-        patternTextBox.Left = 200;
-        patternTextBox.Top = 48;
-        patternTextBox.Width = 320;
-        patternTextBox.Enabled = false;
+            new TextBox
+            {
+                Left = 200,
+                Top = 48,
+                Width = 320,
+                Enabled = false
+            };
 
         Label patternHint =
-            new Label();
+            new Label
+            {
+                Text =
+                    "1-4: event; _: skip; *: double; /: halve",
+                Left = 200,
+                Top = 76,
+                Width = 320,
+                Height = 30
+            };
 
-        patternHint.Text =
-            "1–4: фрагмент; _: пропуск; *: удлинить; /: укоротить";
-
-        patternHint.Left = 200;
-        patternHint.Top = 76;
-        patternHint.Width = 320;
-        patternHint.Height = 30;
-
-        selectButton =
-            new Button();
-
-        selectButton.Text =
-            "Вставить";
-
-        selectButton.Left = 320;
-        selectButton.Top = 125;
-        selectButton.Width = 95;
-        selectButton.DialogResult =
-            DialogResult.OK;
+        insertButton =
+            new Button
+            {
+                Text = "Insert",
+                Left = 320,
+                Top = 125,
+                Width = 95,
+                DialogResult =
+                    DialogResult.OK
+            };
 
         cancelButton =
-            new Button();
-
-        cancelButton.Text =
-            "Отмена";
-
-        cancelButton.Left = 425;
-        cancelButton.Top = 125;
-        cancelButton.Width = 95;
-        cancelButton.DialogResult =
-            DialogResult.Cancel;
+            new Button
+            {
+                Text = "Cancel",
+                Left = 425,
+                Top = 125,
+                Width = 95,
+                DialogResult =
+                    DialogResult.Cancel
+            };
 
         presetRadioButton.CheckedChanged +=
             PresetRadioButton_CheckedChanged;
@@ -758,10 +760,10 @@ public class PatternSelectorForm : Form
         Controls.Add(presetComboBox);
         Controls.Add(patternTextBox);
         Controls.Add(patternHint);
-        Controls.Add(selectButton);
+        Controls.Add(insertButton);
         Controls.Add(cancelButton);
 
-        AcceptButton = selectButton;
+        AcceptButton = insertButton;
         CancelButton = cancelButton;
 
         PresetComboBox_SelectedIndexChanged(
@@ -770,13 +772,13 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Обрабатывает переключение на готовые шаблоны.
+    /// Handles switching to the built-in pattern mode.
     /// </summary>
     /// <param name="sender">
-    /// Источник события.
+    /// Event source.
     /// </param>
     /// <param name="e">
-    /// Аргументы события.
+    /// Event arguments.
     /// </param>
     private void PresetRadioButton_CheckedChanged(
         object sender,
@@ -786,7 +788,7 @@ public class PatternSelectorForm : Form
             presetRadioButton.Checked;
 
         patternTextBox.Enabled =
-            !presetRadioButton.Checked;
+            customRadioButton.Checked;
 
         if (presetRadioButton.Checked)
         {
@@ -797,13 +799,13 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Обрабатывает переключение на ручной ввод шаблона.
+    /// Handles switching to custom pattern mode.
     /// </summary>
     /// <param name="sender">
-    /// Источник события.
+    /// Event source.
     /// </param>
     /// <param name="e">
-    /// Аргументы события.
+    /// Event arguments.
     /// </param>
     private void CustomRadioButton_CheckedChanged(
         object sender,
@@ -820,13 +822,13 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Обновляет поле шаблона при выборе готового пресета.
+    /// Updates the text field when a built-in pattern is selected.
     /// </summary>
     /// <param name="sender">
-    /// Источник события.
+    /// Event source.
     /// </param>
     /// <param name="e">
-    /// Аргументы события.
+    /// Event arguments.
     /// </param>
     private void PresetComboBox_SelectedIndexChanged(
         object sender,
@@ -847,13 +849,13 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Показывает окно и получает пользовательский шаблон.
+    /// Displays the dialog and returns the resulting pattern.
     /// </summary>
     /// <param name="pattern">
-    /// Выбранный или введенный паттерн.
+    /// Selected or entered pattern.
     /// </param>
     /// <returns>
-    /// true, если пользователь подтвердил выбор.
+    /// True when the user confirms a non-empty pattern.
     /// </returns>
     public bool TryGetPattern(
         out string pattern)
@@ -877,9 +879,12 @@ public class PatternSelectorForm : Form
             if (selected == null)
                 return false;
 
-            pattern = selected.Value.Trim();
+            pattern =
+                selected.Value.Trim();
         }
 
         return !String.IsNullOrEmpty(pattern);
     }
 }
+
+#endregion
