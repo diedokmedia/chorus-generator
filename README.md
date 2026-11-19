@@ -6,8 +6,7 @@ A VEGAS Script API utility for inserting one to four selected video events accor
 
 ```text
 chorus-generator/
-├── src/
-│   └── chorus-generator.cs
+├── chorus-generator.cs
 └── README.md
 ```
 
