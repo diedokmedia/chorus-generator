@@ -4,9 +4,9 @@ A VEGAS Pro Script API utility for copying selected audio and video fragments ac
 
 ## Releases
 
-The latest stable release is **0.5.0**.
+The latest stable release is **0.7.0**.
 
-Download it from the [Chorus Generator 0.5.0 release page](https://github.com/diedokmedia/chorus-generator/releases/tag/0.5.0).
+Download it from the [Chorus Generator 0.7.0 release page](https://github.com/diedokmedia/chorus-generator/releases/tag/0.5.0).
 
 ## Project Structure
 
