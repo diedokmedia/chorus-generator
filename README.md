@@ -138,7 +138,7 @@ modifier ::= "*" | "/"
 Rules:
 
 - A pattern cannot be empty.
-- Valid symbols are `1`, `2`, `3`, `4`, `_`, `*`, and `/`.
+- Valid symbols are `1-9`, `_`, `*`, and `/`.
 - A fragment number cannot exceed the number of detected fragments.
 - Consecutive `_` symbols represent multiple skipped steps.
 - `*` and `/` may be combined in any order.
@@ -286,14 +286,11 @@ After copying, the original source events are removed.
 
 The copies remain on the timeline, and source removal is performed inside the VEGAS `UndoBlock`. The complete operation can be undone in one step.
 
-## BPM Dialog
+## BPM and Ruler Settings
 
-If no valid BPM marker exists, the script asks for BPM in a dialog:
+The script reads BPM directly from the VEGAS project ruler:
 
-```text
-BPM: 120.00
-```
-
+vegas.Project.Ruler.BeatsPerMinute
 Cancelling the dialog stops the script.
 
 ## Pattern Dialog
