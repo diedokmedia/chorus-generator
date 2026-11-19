@@ -1,27 +1,22 @@
 # Chorus Generator for VEGAS Pro
 
-A VEGAS Script API utility for inserting one to four selected video events according to a configurable rhythmic pattern.
+A VEGAS Pro Script API utility for copying selected audio and video fragments according to a rhythmic pattern.
 
 ## Project Structure
 
 ```text
 chorus-generator/
-├── chorus-generator.cs
+├── src/
+│   └── chorus-generator.cs
 └── README.md
-```
-
-The complete script is contained in:
-
-```text
-src/chorus-generator.cs
 ```
 
 ## Installation
 
-1. Open `src/chorus-generator.cs` in the VEGAS Script Editor.
-2. Make sure `ScriptPortal.Vegas.dll` is available.
+1. Open `src/chorus-generator.cs` in VEGAS Script Editor.
+2. Ensure `ScriptPortal.Vegas.dll` is available.
 3. Save the script.
-4. Start it from **Tools → Scripting**.
+4. Run it through **Tools → Scripting**.
 
 Required assemblies:
 
@@ -32,15 +27,36 @@ System.Windows.Forms.dll
 ScriptPortal.Vegas.dll
 ```
 
-## BPM Configuration
+## Supported Selection
 
-Add a project marker using this format:
+The script supports:
+
+- one to four selected media fragments;
+- audio events;
+- video events;
+- combined audio and video selections;
+- audio-only or video-only selections.
+
+When only audio or only video is selected, the script includes all audio and video events overlapping the selected time range.
+
+Each fragment is identified by the order of its start position:
+
+```text
+1 = first fragment
+2 = second fragment
+3 = third fragment
+4 = fourth fragment
+```
+
+## BPM
+
+Add a project marker named:
 
 ```text
 BPM=120
 ```
 
-Example values:
+Examples:
 
 ```text
 BPM=128
@@ -48,89 +64,57 @@ BPM=140.5
 BPM=180
 ```
 
-If no valid BPM marker is found, the script uses:
+If no valid BPM marker is found, an input dialog allows entering BPM manually.
 
-```csharp
-private const double DEFAULT_BPM = 120.0;
-```
-
-## Grid Calculation
-
-The grid is calculated from project BPM and a 4/4 time signature:
+The grid calculation assumes 4/4:
 
 ```text
-quarter-note duration = 60 / BPM
-bar duration         = quarter-note duration * 4
-base grid step       = bar duration / 16
+quarter duration = 60 / BPM
+bar duration     = quarter duration × 4
+base grid step   = bar duration / 16
 ```
 
-For example, at `120 BPM`, the base grid step represents a sixteenth note:
+At `120 BPM`, one base grid step is approximately:
 
 ```text
-quarter-note duration = 0.500 seconds
-bar duration          = 2.000 seconds
-base grid step        = 0.125 seconds
+0.125 seconds
 ```
-
-## Selecting Source Events
-
-Select one to four video events on the timeline.
-
-Events are ordered from left to right:
-
-```text
-1 = leftmost selected event
-2 = second selected event
-3 = third selected event
-4 = fourth selected event
-```
-
-The pattern symbols refer to these selected events.
 
 ## Pattern Syntax
 
 | Symbol | Meaning |
 |---|---|
-| `1` | Insert the first selected event |
-| `2` | Insert the second selected event |
-| `3` | Insert the third selected event |
-| `4` | Insert the fourth selected event |
+| `1`–`4` | Copy the corresponding media fragment |
 | `_` | Skip one base grid step |
-| `*` | Double the preceding event's duration |
-| `/` | Halve the preceding event's duration |
+| `*` | Double the fragment duration |
+| `/` | Halve the fragment duration |
 
-Modifiers can be repeated:
-
-```text
-1*      Twice the base duration
-1**     Four times the base duration
-1***    Eight times the base duration
-
-2/      Half of the base duration
-2//     Quarter of the base duration
-2///    One eighth of the base duration
-```
-
-For a sixteenth-note base grid:
+Modifiers may be repeated:
 
 ```text
-1       16th note
-1*      8th note
-1**     Quarter note
-1***    Half note
-1/      32nd note
-1//     64th note
-1///    128th note
+1*      2× duration
+1**     4× duration
+1***    8× duration
+1/      1/2 duration
+1//     1/4 duration
+1///    1/8 duration
 ```
 
-Do not combine `*` and `/` on the same event:
+`*` and `/` may be combined inside one fragment.
+
+Each modifier is applied sequentially:
 
 ```text
-Invalid: 1*/
-Invalid: 1/*
-Valid:   1**
-Valid:   2//
+1*/
 ```
+
+means:
+
+```text
+double, then halve
+```
+
+Thus, `1*/` has the effective multiplier `1`, while `1**/` has the multiplier `2`.
 
 ## Pattern Grammar
 
@@ -143,139 +127,57 @@ fragment ::= fragmentNumber modifier*
 
 fragmentNumber ::= "1" | "2" | "3" | "4"
 
-modifier ::= starModifier | slashModifier
-
-starModifier  ::= "*"+
-slashModifier ::= "/"+
+modifier ::= "*" | "/"
 ```
 
 Rules:
 
-- The pattern cannot be empty.
-- Only `1`, `2`, `3`, `4`, `_`, `*`, and `/` are valid.
-- A modifier must follow an event number.
-- A fragment cannot use both `*` and `/`.
-- An event number cannot exceed the number of selected events.
-- Consecutive `_` symbols represent multiple skipped grid steps.
+- A pattern cannot be empty.
+- Valid symbols are `1`, `2`, `3`, `4`, `_`, `*`, and `/`.
+- A fragment number cannot exceed the number of detected fragments.
+- Consecutive `_` symbols represent multiple skipped steps.
+- `*` and `/` may be combined in any order.
+- Modifiers only follow a fragment number.
 
-## Regular Expression
+## Regular Expressions
 
-The complete pattern can be validated with:
-
-```regex
-^(?:_|[1-4](?:\*+|\/+)*)+$
-```
-
-This expression means:
-
-```text
-(
-    _ 
-    or
-    a number from 1 to 4 followed by a sequence of * or /
-)
-one or more times
-```
-
-Token matching can be performed with:
+Complete-pattern validation:
 
 ```regex
-[1-4](?:\*+|\/+)*|_
+^(?:_|[1-4][*/]*)+$
 ```
 
-For example:
+Fragment token extraction:
+
+```regex
+[1-4][*/]*|_
+```
+
+Example:
 
 ```text
-1_2**__3/
+1*/_2**/__
 ```
 
 is parsed as:
 
 ```text
-1
+1*/
 _
-2**
+2**/
 _
 _
-3/
 ```
 
-The regular expression only validates the pattern syntax. The script also verifies that the referenced event exists:
+The regular expression validates syntax. The script additionally verifies that the referenced fragment exists:
 
 ```csharp
-eventNumber <= selectedEvents.Length
-```
-
-## Pattern Examples
-
-### Alternate between events
-
-```text
-1_2_
-```
-
-```text
-[event 1]
-[one skipped step]
-[event 2]
-[one skipped step]
-```
-
-### Insert events consecutively
-
-```text
-12
-```
-
-```text
-[event 1][event 2]
-```
-
-### Insert four events consecutively
-
-```text
-1234
-```
-
-### Insert four events with skips
-
-```text
-1_2_3_4_
-```
-
-### Insert a long event
-
-```text
-1**
-```
-
-### Insert a short event
-
-```text
-2/
-```
-
-### Combine a long event and a short event
-
-```text
-1**_2/
-```
-
-### Skip multiple grid steps
-
-```text
-__1___2_
-```
-
-### Sparta Remix Chorus preset
-
-```text
-11_11_111_1_1_11222_2_222_222_2_
+fragmentNumber <= segments.Count
 ```
 
 ## Duration Calculation
 
-The duration formula is:
+The effective modifier is calculated as:
 
 ```text
 duration =
@@ -295,104 +197,135 @@ duration =
 Examples:
 
 ```text
-1*   = base × 2
-1**  = base × 4
-1/   = base / 2
-1//  = base / 4
-1**/ = invalid
+1*     ×2
+1**    ×4
+1/     ×0.5
+1//    ×0.25
+1*/    ×1
+1**/   ×2
+1/*/   ×1
+1//**  ×1
 ```
 
-## Timeline Placement
-
-Events are placed sequentially:
+Example pattern:
 
 ```text
-event position =
-    segment start
-    + duration of all previous pattern elements
+1**/_2/
 ```
 
-For example:
+is interpreted as:
 
 ```text
-1_2
+1** = four times the base duration
+_   = skip one base step
+2/  = half the base duration
 ```
 
-means:
+## Pattern Examples
 
 ```text
-event 1 starts at segment start
-event 2 starts one base step later
-```
-
-For:
-
-```text
-1**_2
-```
-
-the result is:
-
-```text
-event 1 occupies four base steps
-one base step is skipped
-event 2 starts after five base steps
-```
-
-## Built-in Patterns
-
-The pattern selector includes:
-
-- Sparta Remix Chorus
-- Alternating 1 and 2
-- Two events consecutively
-- Four events consecutively
-- Four events with skips
-- Long first event
-- Short second event
-- Double first event and single second event
-
-A built-in pattern can be selected or edited.
-
-## Custom Patterns
-
-The script dialog provides:
-
-- a preset selection list;
-- a text field for manual pattern entry;
-- an Insert button;
-- a Cancel button.
-
-Custom pattern examples:
-
-```text
-1_2_1_2_
+1_2_
+12
 1234
+1_2_3_4_
 1**_2/
-_1__2_3/
+1*/_2/**
+__1___2_
 11_11_111_1_1_11222_2_222_222_2_
+```
+
+Built-in presets include:
+
+- Alternate
+- Consecutive
+- Four fragments
+- Four fragments with skips
+- Sparta Remix Chorus
+
+## Media Copying
+
+A fragment copy includes every overlapping event:
+
+- all overlapping video events;
+- all overlapping audio events;
+- the source track of every event;
+- the relative timeline position inside the fragment.
+
+If two fragments are selected:
+
+```text
+fragment 1: audio + video
+fragment 2: audio + video
+```
+
+then:
+
+```text
+1_2_
+```
+
+copies:
+
+```text
+fragment 1
+skip
+fragment 2
+skip
+```
+
+Each copy preserves the relative audio and video positions.
+
+## Source Removal
+
+After copying, the original source events are removed.
+
+The copies remain on the timeline, and source removal is performed inside the VEGAS `UndoBlock`. The complete operation can be undone in one step.
+
+## BPM Dialog
+
+If no valid BPM marker exists, the script asks for BPM in a dialog:
+
+```text
+BPM: 120.00
+```
+
+Cancelling the dialog stops the script.
+
+## Pattern Dialog
+
+The dialog supports:
+
+- built-in patterns;
+- manually entered patterns;
+- Insert and Cancel actions.
+
+Custom pattern example:
+
+```text
+1**/_2*__3//_4
 ```
 
 ## Undo Behavior
 
-Inserted events are created inside a VEGAS undo block:
+Insert and source-removal operations are wrapped in:
 
 ```csharp
 using (UndoBlock undo =
-    new UndoBlock("Insert pattern " + pattern))
+    new UndoBlock("Insert media pattern " + pattern))
 {
-    // Insert events
+    // Copy media fragments
+    // Remove source events
 }
 ```
 
-All inserted events should therefore be combined into one undo operation.
+This creates a single undo operation.
 
 ## Limitations
 
-- Only video events are supported.
-- One to four events can be selected.
-- A pattern cannot reference more events than are selected.
-- `*` and `/` cannot be mixed within one fragment. *(This limitation may be removed in future versions)*
-- BPM is read from a project marker named `BPM=value`.
-- The script defaults to `120 BPM`.
-- The script is intended to run as a single `.cs` file.
+- Supports one to four media fragments.
+- Supports audio and video events.
+- Fragment numbering follows left-to-right timeline position.
+- Audio and video events must overlap for them to belong to the same fragment.
+- `*` and `/` may be mixed and are applied in written order.
+- BPM is read from `BPM=value`; otherwise manual BPM input is requested.
+- Source events are removed after copying.

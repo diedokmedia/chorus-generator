@@ -4,20 +4,18 @@ using System.Globalization;
 using System.Windows.Forms;
 using ScriptPortal.Vegas;
 
-#region Configuration
-
 /// <summary>
-/// Main entry point for the VEGAS Pro scripting API.
+/// Generates and inserts copies of selected VEGAS media fragments.
 /// </summary>
-public partial class EntryPoint
+public class EntryPoint
 {
     /// <summary>
-    /// Default BPM used when no valid project BPM marker is found.
+    /// Default BPM used when no BPM marker or user value is available.
     /// </summary>
     private const double DEFAULT_BPM = 120.0;
 
     /// <summary>
-    /// Number of beats in one bar.
+    /// Number of beats in a 4/4 bar.
     /// </summary>
     private const int BEATS_PER_BAR = 4;
 
@@ -27,22 +25,22 @@ public partial class EntryPoint
     private const int BASE_GRID_DIVISIONS = 16;
 
     /// <summary>
-    /// Entry point called by VEGAS when the script is launched.
+    /// Main entry point called by VEGAS.
     /// </summary>
     /// <param name="vegas">
-    /// The active VEGAS application and project object.
+    /// Active VEGAS application.
     /// </param>
     public void FromVegas(Vegas vegas)
     {
         try
         {
-            TrackEvent[] selectedEvents =
-                FindSelectedVideoEvents(vegas);
+            List<MediaSegment> segments =
+                FindSelectedMediaSegments(vegas);
 
-            if (selectedEvents.Length == 0)
+            if (segments.Count == 0)
             {
                 MessageBox.Show(
-                    "Select one to four video events.",
+                    "Select one to four audio or video fragments.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -50,10 +48,10 @@ public partial class EntryPoint
                 return;
             }
 
-            if (selectedEvents.Length > 4)
+            if (segments.Count > 4)
             {
                 MessageBox.Show(
-                    "More than four video events are selected.",
+                    "Select no more than four media fragments.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -72,25 +70,30 @@ public partial class EntryPoint
 
             ValidatePattern(
                 pattern,
-                selectedEvents.Length);
+                segments.Count);
 
-            Timecode segmentStart =
-                GetSegmentStart(
-                    vegas,
-                    selectedEvents);
+            double bpm =
+                GetProjectBpm(vegas);
 
             Timecode baseStep =
-                CalculateBaseGridStep(vegas);
+                CalculateBaseGridStep(bpm);
 
             using (UndoBlock undo = new UndoBlock(
-                "Insert pattern " + pattern))
+                "Insert media pattern " + pattern))
             {
                 InsertPattern(
-                    selectedEvents,
-                    segmentStart,
+                    segments,
                     baseStep,
                     pattern);
+
+                RemoveSourceEvents(
+                    vegas,
+                    segments);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // BPM or pattern dialog was cancelled.
         }
         catch (Exception ex)
         {
@@ -103,92 +106,214 @@ public partial class EntryPoint
     }
 
     /// <summary>
-    /// Finds selected video events and orders them left to right.
+    /// Finds selected media fragments and expands each fragment
+    /// to include overlapping audio and video events.
     /// </summary>
     /// <param name="vegas">
-    /// The active VEGAS application object.
+    /// Active VEGAS application.
     /// </param>
     /// <returns>
-    /// Selected video events ordered by timeline position.
+    /// Selected media fragments ordered from left to right.
     /// </returns>
-    private TrackEvent[] FindSelectedVideoEvents(Vegas vegas)
+    private List<MediaSegment> FindSelectedMediaSegments(
+        Vegas vegas)
     {
         List<TrackEvent> selectedEvents =
             new List<TrackEvent>();
 
         foreach (Track track in vegas.Project.Tracks)
         {
-            if (!(track is VideoTrack))
-                continue;
-
             foreach (TrackEvent trackEvent in track.Events)
             {
-                if (trackEvent is VideoEvent &&
-                    trackEvent.Selected)
+                if (!trackEvent.Selected)
+                    continue;
+
+                if (trackEvent.IsAudio() ||
+                    trackEvent.IsVideo())
                 {
                     selectedEvents.Add(trackEvent);
                 }
             }
         }
 
+        if (selectedEvents.Count == 0)
+            return new List<MediaSegment>();
+
         selectedEvents.Sort(
             delegate(
                 TrackEvent first,
                 TrackEvent second)
             {
-                return first.Start.ToMilliseconds()
-                    .CompareTo(
-                        second.Start.ToMilliseconds());
+                int position =
+                    first.Start.Nanos.CompareTo(
+                        second.Start.Nanos);
+
+                if (position != 0)
+                    return position;
+
+                return first.Track.Index.CompareTo(
+                    second.Track.Index);
             });
 
-        return selectedEvents.ToArray();
+        List<MediaSegment> segments =
+            new List<MediaSegment>();
+
+        foreach (TrackEvent selectedEvent in selectedEvents)
+        {
+            MediaSegment segment =
+                FindOverlappingSegment(
+                    segments,
+                    selectedEvent);
+
+            if (segment == null)
+            {
+                segment =
+                    new MediaSegment
+                    {
+                        Start = selectedEvent.Start,
+                        End = selectedEvent.End
+                    };
+
+                segments.Add(segment);
+            }
+
+            if (selectedEvent.Start.Nanos <
+                segment.Start.Nanos)
+            {
+                segment.Start =
+                    selectedEvent.Start;
+            }
+
+            if (selectedEvent.End.Nanos >
+                segment.End.Nanos)
+            {
+                segment.End =
+                    selectedEvent.End;
+            }
+        }
+
+        segments.Sort(
+            delegate(
+                MediaSegment first,
+                MediaSegment second)
+            {
+                return first.Start.Nanos.CompareTo(
+                    second.Start.Nanos);
+            });
+
+        foreach (MediaSegment segment in segments)
+        {
+            AddOverlappingEvents(
+                vegas,
+                segment);
+        }
+
+        return segments;
     }
 
     /// <summary>
-    /// Gets the start of the source segment.
+    /// Finds a fragment overlapping a selected event.
     /// </summary>
-    /// <param name="vegas">
-    /// The active VEGAS application object.
+    /// <param name="segments">
+    /// Existing media fragments.
     /// </param>
-    /// <param name="selectedEvents">
-    /// Selected video events ordered by timeline position.
+    /// <param name="trackEvent">
+    /// Selected media event.
     /// </param>
     /// <returns>
-    /// The selection start or the start of the first selected event.
+    /// Overlapping fragment or null.
     /// </returns>
-    private Timecode GetSegmentStart(
-        Vegas vegas,
-        TrackEvent[] selectedEvents)
+    private MediaSegment FindOverlappingSegment(
+        List<MediaSegment> segments,
+        TrackEvent trackEvent)
     {
-        if (vegas.SelectionLength.ToMilliseconds() > 0)
-            return vegas.SelectionStart;
+        foreach (MediaSegment segment in segments)
+        {
+            bool overlaps =
+                trackEvent.Start.Nanos <= segment.End.Nanos &&
+                trackEvent.End.Nanos >= segment.Start.Nanos;
 
-        return selectedEvents[0].Start;
+            if (overlaps)
+                return segment;
+        }
+
+        return null;
     }
-}
 
-#endregion
-
-#region Grid and BPM
-
-/// <summary>
-/// Provides project BPM and grid calculation helpers.
-/// </summary>
-public partial class EntryPoint
-{
     /// <summary>
-    /// Reads project BPM from a marker named <c>BPM=value</c>.
+    /// Adds every audio and video event overlapping a fragment.
     /// </summary>
     /// <param name="vegas">
-    /// The active VEGAS application object.
+    /// Active VEGAS application.
+    /// </param>
+    /// <param name="segment">
+    /// Fragment to expand.
+    /// </param>
+    private void AddOverlappingEvents(
+        Vegas vegas,
+        MediaSegment segment)
+    {
+        segment.Events.Clear();
+
+        foreach (Track track in vegas.Project.Tracks)
+        {
+            foreach (TrackEvent trackEvent in track.Events)
+            {
+                if (!trackEvent.IsAudio() &&
+                    !trackEvent.IsVideo())
+                {
+                    continue;
+                }
+
+                bool overlaps =
+                    trackEvent.Start.Nanos < segment.End.Nanos &&
+                    trackEvent.End.Nanos > segment.Start.Nanos;
+
+                if (!overlaps)
+                    continue;
+
+                bool alreadyAdded = false;
+
+                foreach (TrackEvent existing in segment.Events)
+                {
+                    if (existing == trackEvent)
+                    {
+                        alreadyAdded = true;
+                        break;
+                    }
+                }
+
+                if (!alreadyAdded)
+                    segment.Events.Add(trackEvent);
+            }
+        }
+
+        segment.Events.Sort(
+            delegate(
+                TrackEvent first,
+                TrackEvent second)
+            {
+                int position =
+                    first.Start.Nanos.CompareTo(
+                        second.Start.Nanos);
+
+                if (position != 0)
+                    return position;
+
+                return first.Track.Index.CompareTo(
+                    second.Track.Index);
+            });
+    }
+
+    /// <summary>
+    /// Gets BPM from a project marker or opens a BPM input dialog.
+    /// </summary>
+    /// <param name="vegas">
+    /// Active VEGAS application.
     /// </param>
     /// <returns>
-    /// The project BPM or <see cref="DEFAULT_BPM"/>.
+    /// Project BPM or user-entered BPM.
     /// </returns>
-    /// <example>
-    /// Create a project marker named:
-    /// <code>BPM=128</code>
-    /// </example>
     private double GetProjectBpm(Vegas vegas)
     {
         foreach (Marker marker in vegas.Project.Markers)
@@ -206,36 +331,41 @@ public partial class EntryPoint
                 continue;
             }
 
-            double bpm;
+            double markerBpm;
 
             bool parsed =
                 Double.TryParse(
                     label.Substring(4),
                     NumberStyles.Float,
                     CultureInfo.InvariantCulture,
-                    out bpm);
+                    out markerBpm);
 
-            if (parsed && bpm > 0)
-                return bpm;
+            if (parsed && markerBpm > 0)
+                return markerBpm;
         }
 
-        return DEFAULT_BPM;
+        using (BpmInputForm bpmForm =
+            new BpmInputForm(DEFAULT_BPM))
+        {
+            if (bpmForm.ShowDialog() != DialogResult.OK)
+                throw new OperationCanceledException();
+
+            return bpmForm.Bpm;
+        }
     }
 
     /// <summary>
     /// Calculates the duration of one base grid step.
     /// </summary>
-    /// <param name="vegas">
-    /// The active VEGAS application object.
+    /// <param name="bpm">
+    /// Tempo used for grid calculation.
     /// </param>
     /// <returns>
     /// Duration of one base grid step.
     /// </returns>
-    private Timecode CalculateBaseGridStep(Vegas vegas)
+    private Timecode CalculateBaseGridStep(
+        double bpm)
     {
-        double bpm =
-            GetProjectBpm(vegas);
-
         if (bpm <= 0)
         {
             throw new InvalidOperationException(
@@ -251,37 +381,21 @@ public partial class EntryPoint
         double stepSeconds =
             barSeconds / BASE_GRID_DIVISIONS;
 
-        return Timecode.FromMilliseconds(
-            stepSeconds * 1000.0);
+        return Timecode.FromSeconds(stepSeconds);
     }
-}
 
-#endregion
-
-#region Pattern parser
-
-/// <summary>
-/// Provides pattern validation and duration calculation.
-/// </summary>
-public partial class EntryPoint
-{
     /// <summary>
-    /// Validates a pattern against the source event count.
+    /// Validates a pattern and fragment references.
     /// </summary>
     /// <param name="pattern">
-    /// Pattern containing event numbers, underscores,
-    /// asterisks, and slashes.
+    /// Pattern expression.
     /// </param>
-    /// <param name="eventCount">
-    /// Number of selected source events.
+    /// <param name="fragmentCount">
+    /// Number of detected fragments.
     /// </param>
-    /// <exception cref="ArgumentException">
-    /// The pattern is empty or contains an invalid symbol,
-    /// mixed modifiers, or an unavailable event number.
-    /// </exception>
     private void ValidatePattern(
         string pattern,
-        int eventCount)
+        int fragmentCount)
     {
         if (String.IsNullOrEmpty(pattern))
         {
@@ -306,22 +420,21 @@ public partial class EntryPoint
                 symbol > '4')
             {
                 throw new ArgumentException(
-                    "Invalid symbol '" +
-                    symbol +
-                    "'. Use 1-4 or underscore.");
+                    "Only fragment numbers 1-4, _, * and / " +
+                    "are allowed.");
             }
 
-            int eventNumber =
+            int fragmentNumber =
                 symbol - '0';
 
-            if (eventNumber > eventCount)
+            if (fragmentNumber > fragmentCount)
             {
                 throw new ArgumentException(
-                    "The pattern uses event " +
-                    eventNumber +
+                    "The pattern references fragment " +
+                    fragmentNumber +
                     ", but only " +
-                    eventCount +
-                    " event(s) are selected.");
+                    fragmentCount +
+                    " fragment(s) are available.");
             }
 
             index++;
@@ -351,75 +464,45 @@ public partial class EntryPoint
     }
 
     /// <summary>
-    /// Calculates an event duration.
+    /// Calculates a pattern duration multiplier.
     /// </summary>
-    /// <param name="baseStepMilliseconds">
-    /// Duration of the base grid step.
-    /// </param>
     /// <param name="asteriskCount">
-    /// Number of * modifiers.
+    /// Number of asterisk modifiers.
     /// </param>
     /// <param name="slashCount">
-    /// Number of / modifiers.
+    /// Number of slash modifiers.
     /// </param>
     /// <returns>
-    /// Calculated duration in milliseconds.
+    /// Duration multiplier.
     /// </returns>
-    private double CalculateDurationMilliseconds(
-        double baseStepMilliseconds,
+    private double CalculateMultiplier(
         int asteriskCount,
         int slashCount)
     {
-        double multiplier =
-            Math.Pow(
-                2.0,
-                asteriskCount - slashCount);
-
-        double duration =
-            baseStepMilliseconds * multiplier;
-
-        if (duration <= 0)
-        {
-            throw new InvalidOperationException(
-                "The fragment duration is not positive.");
-        }
-
-        return duration;
+        return Math.Pow(
+            2.0,
+            asteriskCount - slashCount);
     }
-}
 
-#endregion
-
-#region Pattern insertion
-
-/// <summary>
-/// Inserts copied events according to a parsed pattern.
-/// </summary>
-public partial class EntryPoint
-{
     /// <summary>
-    /// Inserts source events according to the supplied pattern.
+    /// Inserts copies according to the pattern.
     /// </summary>
-    /// <param name="selectedEvents">
-    /// Source events ordered from left to right.
-    /// </param>
-    /// <param name="segmentStart">
-    /// Start of the source segment.
+    /// <param name="segments">
+    /// Source media fragments.
     /// </param>
     /// <param name="baseStep">
     /// Duration of one base grid step.
     /// </param>
     /// <param name="pattern">
-    /// Pattern such as <c>1_2_</c> or <c>11_11_111_</c>.
+    /// Pattern expression.
     /// </param>
     private void InsertPattern(
-        TrackEvent[] selectedEvents,
-        Timecode segmentStart,
+        List<MediaSegment> segments,
         Timecode baseStep,
         string pattern)
     {
-        double cursorMilliseconds =
-            segmentStart.ToMilliseconds();
+        long cursor =
+            segments[0].Start.Nanos;
 
         int index = 0;
 
@@ -430,18 +513,16 @@ public partial class EntryPoint
 
             if (symbol == '_')
             {
-                cursorMilliseconds +=
-                    baseStep.ToMilliseconds();
-
+                cursor += baseStep.Nanos;
                 index++;
                 continue;
             }
 
-            int eventNumber =
+            int fragmentNumber =
                 symbol - '0';
 
-            TrackEvent sourceEvent =
-                selectedEvents[eventNumber - 1];
+            MediaSegment sourceSegment =
+                segments[fragmentNumber - 1];
 
             index++;
 
@@ -460,19 +541,64 @@ public partial class EntryPoint
                 index++;
             }
 
-            double durationMilliseconds =
-                CalculateDurationMilliseconds(
-                    baseStep.ToMilliseconds(),
+            double multiplier =
+                CalculateMultiplier(
                     asteriskCount,
                     slashCount);
 
-            Timecode copyStart =
-                Timecode.FromMilliseconds(
-                    cursorMilliseconds);
+            long fragmentDuration =
+                (long)Math.Round(
+                    baseStep.Nanos * multiplier);
 
-            Timecode copyLength =
-                Timecode.FromMilliseconds(
-                    durationMilliseconds);
+            if (fragmentDuration <= 0)
+            {
+                throw new InvalidOperationException(
+                    "The fragment duration must be positive.");
+            }
+
+            CopyMediaSegment(
+                sourceSegment,
+                Timecode.FromNanos(cursor),
+                multiplier);
+
+            cursor += fragmentDuration;
+        }
+    }
+
+    /// <summary>
+    /// Copies every audio and video event in a media fragment.
+    /// </summary>
+    /// <param name="sourceSegment">
+    /// Source media fragment.
+    /// </param>
+    /// <param name="destinationStart">
+    /// Start position of the copy.
+    /// </param>
+    /// <param name="multiplier">
+    /// Relative duration and position multiplier.
+    /// </param>
+    private void CopyMediaSegment(
+        MediaSegment sourceSegment,
+        Timecode destinationStart,
+        double multiplier)
+    {
+        foreach (TrackEvent sourceEvent in sourceSegment.Events)
+        {
+            long relativeOffset =
+                sourceEvent.Start.Nanos -
+                sourceSegment.Start.Nanos;
+
+            if (relativeOffset < 0)
+                relativeOffset = 0;
+
+            long adjustedOffset =
+                (long)Math.Round(
+                    relativeOffset * multiplier);
+
+            Timecode copyStart =
+                Timecode.FromNanos(
+                    destinationStart.Nanos +
+                    adjustedOffset);
 
             TrackEvent copy =
                 sourceEvent.Copy(
@@ -480,36 +606,42 @@ public partial class EntryPoint
                     copyStart);
 
             copy.Start = copyStart;
-            copy.Length = copyLength;
+            copy.Length =
+                Timecode.FromNanos(
+                    (long)Math.Round(
+                        sourceEvent.Length.Nanos *
+                        multiplier));
 
             SetCopyTakeOffset(
                 sourceEvent,
                 copy,
-                segmentStart);
+                sourceSegment.Start,
+                multiplier);
 
             copy.Selected = true;
-
-            cursorMilliseconds +=
-                durationMilliseconds;
         }
     }
 
     /// <summary>
-    /// Sets the media offset of a copied event.
+    /// Sets the source offset of a copied take.
     /// </summary>
     /// <param name="sourceEvent">
-    /// Source selected event.
+    /// Source media event.
     /// </param>
     /// <param name="copy">
-    /// Copied event.
+    /// Copied media event.
     /// </param>
-    /// <param name="segmentStart">
-    /// Start of the source segment.
+    /// <param name="sourceStart">
+    /// Source fragment start.
+    /// </param>
+    /// <param name="multiplier">
+    /// Relative offset multiplier.
     /// </param>
     private void SetCopyTakeOffset(
         TrackEvent sourceEvent,
         TrackEvent copy,
-        Timecode segmentStart)
+        Timecode sourceStart,
+        double multiplier)
     {
         Take sourceTake =
             sourceEvent.ActiveTake;
@@ -523,31 +655,105 @@ public partial class EntryPoint
             return;
         }
 
-        double relativeOffset =
-            sourceEvent.Start.ToMilliseconds() -
-            segmentStart.ToMilliseconds();
+        long relativeOffset =
+            sourceEvent.Start.Nanos -
+            sourceStart.Nanos;
 
         if (relativeOffset < 0)
             relativeOffset = 0;
 
         copyTake.Offset =
-            Timecode.FromMilliseconds(
-                sourceTake.Offset.ToMilliseconds() +
-                relativeOffset);
+            Timecode.FromNanos(
+                sourceTake.Offset.Nanos +
+                (long)Math.Round(
+                    relativeOffset *
+                    multiplier));
+    }
+
+    /// <summary>
+    /// Removes original source events after copies are inserted.
+    /// </summary>
+    /// <param name="vegas">
+    /// Active VEGAS application.
+    /// </param>
+    /// <param name="segments">
+    /// Source media fragments.
+    /// </param>
+    private void RemoveSourceEvents(
+        Vegas vegas,
+        List<MediaSegment> segments)
+    {
+        List<TrackEvent> eventsToRemove =
+            new List<TrackEvent>();
+
+        foreach (MediaSegment segment in segments)
+        {
+            foreach (TrackEvent trackEvent in segment.Events)
+            {
+                bool alreadyAdded = false;
+
+                foreach (TrackEvent existing in eventsToRemove)
+                {
+                    if (existing == trackEvent)
+                    {
+                        alreadyAdded = true;
+                        break;
+                    }
+                }
+
+                if (!alreadyAdded)
+                    eventsToRemove.Add(trackEvent);
+            }
+        }
+
+        foreach (TrackEvent trackEvent in eventsToRemove)
+        {
+            if (trackEvent.Track != null &&
+                trackEvent.Track.Events.Contains(trackEvent))
+            {
+                trackEvent.Track.Events.Remove(trackEvent);
+            }
+        }
+
+        foreach (Track track in vegas.Project.Tracks)
+        {
+            foreach (TrackEvent trackEvent in track.Events)
+            {
+                trackEvent.Selected = false;
+            }
+        }
     }
 }
 
-#endregion
+/// <summary>
+/// Represents one media fragment.
+/// </summary>
+public class MediaSegment
+{
+    /// <summary>
+    /// Fragment start position.
+    /// </summary>
+    public Timecode Start;
 
-#region Built-in patterns
+    /// <summary>
+    /// Fragment end position.
+    /// </summary>
+    public Timecode End;
+
+    /// <summary>
+    /// Overlapping audio and video events.
+    /// </summary>
+    public List<TrackEvent> Events =
+        new List<TrackEvent>();
+}
 
 /// <summary>
-/// Represents a named built-in pattern.
+/// Represents a built-in pattern.
 /// </summary>
 public class PatternDefinition
 {
     /// <summary>
-    /// Display name of the pattern.
+    /// Pattern display name.
     /// </summary>
     public string Name { get; private set; }
 
@@ -559,12 +765,8 @@ public class PatternDefinition
     /// <summary>
     /// Creates a pattern definition.
     /// </summary>
-    /// <param name="name">
-    /// Display name.
-    /// </param>
-    /// <param name="value">
-    /// Pattern expression.
-    /// </param>
+    /// <param name="name">Display name.</param>
+    /// <param name="value">Pattern expression.</param>
     public PatternDefinition(
         string name,
         string value)
@@ -574,10 +776,10 @@ public class PatternDefinition
     }
 
     /// <summary>
-    /// Returns the pattern name for display controls.
+    /// Returns the pattern name.
     /// </summary>
     /// <returns>
-    /// The pattern name.
+    /// Pattern name.
     /// </returns>
     public override string ToString()
     {
@@ -586,61 +788,45 @@ public class PatternDefinition
 }
 
 /// <summary>
-/// Provides built-in chorus and rhythmic patterns.
+/// Provides built-in patterns.
 /// </summary>
 public static class PatternLibrary
 {
     /// <summary>
-    /// Gets the built-in pattern list.
+    /// Gets built-in patterns.
     /// </summary>
     /// <returns>
-    /// Available pattern definitions.
+    /// Pattern definitions.
     /// </returns>
     public static List<PatternDefinition> GetPatterns()
     {
         return new List<PatternDefinition>
         {
             new PatternDefinition(
-                "Sparta Remix Chorus",
-                "11_11_111_1_1_11222_2_222_222_2_"),
-
-            new PatternDefinition(
-                "Alternate 1 and 2",
+                "Alternate",
                 "1_2_"),
 
             new PatternDefinition(
-                "Two events consecutively",
+                "Consecutive",
                 "12"),
 
             new PatternDefinition(
-                "Four events consecutively",
+                "Four fragments",
                 "1234"),
 
             new PatternDefinition(
-                "Four events with skips",
+                "Four fragments with skips",
                 "1_2_3_4_"),
 
             new PatternDefinition(
-                "Long first event",
-                "1**_2"),
-
-            new PatternDefinition(
-                "Short second event",
-                "1_2/"),
-
-            new PatternDefinition(
-                "Double first and short second",
-                "1*__2/")
+                "Sparta Remix Chorus",
+                "11_11_111_1_1_11222_2_222_222_2_")
         };
     }
 }
 
-#endregion
-
-#region Pattern selector
-
 /// <summary>
-/// Window for selecting a built-in pattern or entering a custom pattern.
+/// Dialog for selecting a pattern.
 /// </summary>
 public class PatternSelectorForm : Form
 {
@@ -652,7 +838,7 @@ public class PatternSelectorForm : Form
     private Button cancelButton;
 
     /// <summary>
-    /// Creates the pattern selector window.
+    /// Creates the pattern selection dialog.
     /// </summary>
     public PatternSelectorForm()
     {
@@ -679,7 +865,7 @@ public class PatternSelectorForm : Form
         customRadioButton =
             new RadioButton
             {
-                Text = "Enter a custom pattern",
+                Text = "Enter custom pattern",
                 Left = 15,
                 Top = 50,
                 Width = 180
@@ -713,11 +899,11 @@ public class PatternSelectorForm : Form
                 Enabled = false
             };
 
-        Label patternHint =
+        Label hintLabel =
             new Label
             {
                 Text =
-                    "1-4: event; _: skip; *: double; /: halve",
+                    "1-4: fragment; _: skip; *: double; /: halve",
                 Left = 200,
                 Top = 76,
                 Width = 320,
@@ -759,7 +945,7 @@ public class PatternSelectorForm : Form
         Controls.Add(customRadioButton);
         Controls.Add(presetComboBox);
         Controls.Add(patternTextBox);
-        Controls.Add(patternHint);
+        Controls.Add(hintLabel);
         Controls.Add(insertButton);
         Controls.Add(cancelButton);
 
@@ -772,14 +958,8 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Handles switching to the built-in pattern mode.
+    /// Handles built-in pattern mode.
     /// </summary>
-    /// <param name="sender">
-    /// Event source.
-    /// </param>
-    /// <param name="e">
-    /// Event arguments.
-    /// </param>
     private void PresetRadioButton_CheckedChanged(
         object sender,
         EventArgs e)
@@ -799,14 +979,8 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Handles switching to custom pattern mode.
+    /// Handles custom pattern mode.
     /// </summary>
-    /// <param name="sender">
-    /// Event source.
-    /// </param>
-    /// <param name="e">
-    /// Event arguments.
-    /// </param>
     private void CustomRadioButton_CheckedChanged(
         object sender,
         EventArgs e)
@@ -822,14 +996,8 @@ public class PatternSelectorForm : Form
     }
 
     /// <summary>
-    /// Updates the text field when a built-in pattern is selected.
+    /// Updates the pattern field for a preset.
     /// </summary>
-    /// <param name="sender">
-    /// Event source.
-    /// </param>
-    /// <param name="e">
-    /// Event arguments.
-    /// </param>
     private void PresetComboBox_SelectedIndexChanged(
         object sender,
         EventArgs e)
@@ -842,20 +1010,18 @@ public class PatternSelectorForm : Form
             as PatternDefinition;
 
         if (selected != null)
-        {
             patternTextBox.Text =
                 selected.Value;
-        }
     }
 
     /// <summary>
-    /// Displays the dialog and returns the resulting pattern.
+    /// Returns the selected or custom pattern.
     /// </summary>
     /// <param name="pattern">
-    /// Selected or entered pattern.
+    /// Pattern text.
     /// </param>
     /// <returns>
-    /// True when the user confirms a non-empty pattern.
+    /// True if the pattern is valid and non-empty.
     /// </returns>
     public bool TryGetPattern(
         out string pattern)
@@ -887,4 +1053,108 @@ public class PatternSelectorForm : Form
     }
 }
 
-#endregion
+/// <summary>
+/// Dialog for manually entering BPM.
+/// </summary>
+public class BpmInputForm : Form
+{
+    /// <summary>
+    /// Entered BPM value.
+    /// </summary>
+    public double Bpm { get; private set; }
+
+    private NumericUpDown bpmInput;
+
+    /// <summary>
+    /// Creates the BPM input dialog.
+    /// </summary>
+    /// <param name="defaultBpm">
+    /// Initial BPM value.
+    /// </param>
+    public BpmInputForm(double defaultBpm)
+    {
+        Text = "Enter BPM";
+        Width = 320;
+        Height = 165;
+        StartPosition =
+            FormStartPosition.CenterScreen;
+        FormBorderStyle =
+            FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+
+        Label label =
+            new Label
+            {
+                Text = "BPM:",
+                Left = 15,
+                Top = 18,
+                Width = 50
+            };
+
+        bpmInput =
+            new NumericUpDown
+            {
+                Left = 70,
+                Top = 15,
+                Width = 210,
+                Minimum = 1,
+                Maximum = 999,
+                DecimalPlaces = 2,
+                Increment = 1,
+                Value = Convert.ToDecimal(
+                    defaultBpm)
+            };
+
+        Button okButton =
+            new Button
+            {
+                Text = "Continue",
+                Left = 110,
+                Top = 60,
+                Width = 80,
+                DialogResult =
+                    DialogResult.OK
+            };
+
+        Button cancelButton =
+            new Button
+            {
+                Text = "Cancel",
+                Left = 200,
+                Top = 60,
+                Width = 80,
+                DialogResult =
+                    DialogResult.Cancel
+            };
+
+        okButton.Click +=
+            OkButton_Click;
+
+        Controls.Add(label);
+        Controls.Add(bpmInput);
+        Controls.Add(okButton);
+        Controls.Add(cancelButton);
+
+        AcceptButton = okButton;
+        CancelButton = cancelButton;
+    }
+
+    /// <summary>
+    /// Stores the entered BPM.
+    /// </summary>
+    /// <param name="sender">
+    /// Event source.
+    /// </param>
+    /// <param name="e">
+    /// Event arguments.
+    /// </param>
+    private void OkButton_Click(
+        object sender,
+        EventArgs e)
+    {
+        Bpm =
+            Convert.ToDouble(
+                bpmInput.Value);
+    }
+}
