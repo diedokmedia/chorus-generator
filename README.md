@@ -89,7 +89,7 @@ At `120 BPM`, one base grid step is approximately:
 
 | Symbol | Meaning |
 |---|---|
-| `1`–`4` | Copy the corresponding media fragment |
+| `1`–`9` | Copy the corresponding media fragment |
 | `_` | Skip one base grid step |
 | `*` | Double the fragment duration |
 | `/` | Halve the fragment duration |
@@ -149,14 +149,15 @@ Rules:
 Complete-pattern validation:
 
 ```regex
-^(?:_|[1-4][*/]*)+$
+^(?:_|[1-9][*/]*)+$
 ```
 
 Fragment token extraction:
 
 ```regex
-[1-4][*/]*|_
+[1-9][*/]*|_
 ```
+*In the future, it is possible to support regular expressions from the user, but this will be in the distant future.*
 
 Example:
 
