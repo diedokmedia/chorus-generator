@@ -48,10 +48,10 @@ public class EntryPoint
                 return;
             }
 
-            if (segments.Count > 4)
+            if (segments.Count > 9)
             {
                 MessageBox.Show(
-                    "Select no more than four media fragments.",
+                    "Select no more than nine media fragments.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -160,10 +160,22 @@ public class EntryPoint
 
         foreach (TrackEvent selectedEvent in selectedEvents)
         {
-            MediaSegment segment =
-                FindOverlappingSegment(
-                    segments,
-                    selectedEvent);
+            MediaSegment segment = null;
+
+            foreach (MediaSegment existing in segments)
+            {
+                bool overlaps =
+                    selectedEvent.Start.Nanos <
+                    existing.End.Nanos &&
+                    selectedEvent.End.Nanos >
+                    existing.Start.Nanos;
+
+                if (overlaps)
+                {
+                    segment = existing;
+                    break;
+                }
+            }
 
             if (segment == null)
             {
@@ -230,8 +242,8 @@ public class EntryPoint
         foreach (MediaSegment segment in segments)
         {
             bool overlaps =
-                trackEvent.Start.Nanos <= segment.End.Nanos &&
-                trackEvent.End.Nanos >= segment.Start.Nanos;
+                trackEvent.Start.Nanos < segment.End.Nanos &&
+                trackEvent.End.Nanos > segment.Start.Nanos;
 
             if (overlaps)
                 return segment;
@@ -306,52 +318,23 @@ public class EntryPoint
     }
 
     /// <summary>
-    /// Gets BPM from a project marker or opens a BPM input dialog.
+    /// Gets BPM from the VEGAS project ruler.
     /// </summary>
     /// <param name="vegas">
     /// Active VEGAS application.
     /// </param>
     /// <returns>
-    /// Project BPM or user-entered BPM.
+    /// Project BPM or the default BPM if the value is invalid.
     /// </returns>
     private double GetProjectBpm(Vegas vegas)
     {
-        foreach (Marker marker in vegas.Project.Markers)
-        {
-            if (marker.Label == null)
-                continue;
+        double bpm =
+            vegas.Project.Ruler.BeatsPerMinute;
 
-            string label =
-                marker.Label.Trim();
+        if (bpm > 0)
+            return bpm;
 
-            if (!label.StartsWith(
-                "BPM=",
-                StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            double markerBpm;
-
-            bool parsed =
-                Double.TryParse(
-                    label.Substring(4),
-                    NumberStyles.Float,
-                    CultureInfo.InvariantCulture,
-                    out markerBpm);
-
-            if (parsed && markerBpm > 0)
-                return markerBpm;
-        }
-
-        using (BpmInputForm bpmForm =
-            new BpmInputForm(DEFAULT_BPM))
-        {
-            if (bpmForm.ShowDialog() != DialogResult.OK)
-                throw new OperationCanceledException();
-
-            return bpmForm.Bpm;
-        }
+        return DEFAULT_BPM;
     }
 
     /// <summary>
@@ -407,57 +390,42 @@ public class EntryPoint
 
         while (index < pattern.Length)
         {
-            char symbol =
-                pattern[index];
+            char symbol = pattern[index];
 
-            if (symbol == '_')
-            {
-                index++;
-                continue;
-            }
-
-            if (symbol < '1' ||
-                symbol > '4')
+            if (symbol != '_' &&
+                (symbol < '1' || symbol > '9'))
             {
                 throw new ArgumentException(
-                    "Only fragment numbers 1-4, _, * and / " +
-                    "are allowed.");
+                    "Invalid symbol '" +
+                    symbol +
+                    "' at position " +
+                    index +
+                    ". Allowed symbols: 1-9, _, * and /.");
             }
 
-            int fragmentNumber =
-                symbol - '0';
-
-            if (fragmentNumber > fragmentCount)
+            if (symbol >= '1' &&
+                symbol <= '9')
             {
-                throw new ArgumentException(
-                    "The pattern references fragment " +
-                    fragmentNumber +
-                    ", but only " +
-                    fragmentCount +
-                    " fragment(s) are available.");
+                int fragmentNumber =
+                    symbol - '0';
+
+                if (fragmentNumber > fragmentCount)
+                {
+                    throw new ArgumentException(
+                        "The pattern references fragment " +
+                        fragmentNumber +
+                        ", but only " +
+                        fragmentCount +
+                        " fragment(s) are available.");
+                }
             }
 
             index++;
-
-            char modifier = '\0';
 
             while (index < pattern.Length &&
                    (pattern[index] == '*' ||
                     pattern[index] == '/'))
             {
-                char currentModifier =
-                    pattern[index];
-
-                if (modifier == '\0')
-                {
-                    modifier = currentModifier;
-                }
-                else if (modifier != currentModifier)
-                {
-                    throw new ArgumentException(
-                        "A fragment cannot mix * and / modifiers.");
-                }
-
                 index++;
             }
         }
@@ -511,19 +479,6 @@ public class EntryPoint
             char symbol =
                 pattern[index];
 
-            if (symbol == '_')
-            {
-                cursor += baseStep.Nanos;
-                index++;
-                continue;
-            }
-
-            int fragmentNumber =
-                symbol - '0';
-
-            MediaSegment sourceSegment =
-                segments[fragmentNumber - 1];
-
             index++;
 
             int asteriskCount = 0;
@@ -546,22 +501,34 @@ public class EntryPoint
                     asteriskCount,
                     slashCount);
 
-            long fragmentDuration =
+            long duration =
                 (long)Math.Round(
                     baseStep.Nanos * multiplier);
 
-            if (fragmentDuration <= 0)
+            if (duration <= 0)
             {
                 throw new InvalidOperationException(
-                    "The fragment duration must be positive.");
+                    "The calculated duration is invalid.");
             }
+
+            if (symbol == '_')
+            {
+                cursor += duration;
+                continue;
+            }
+
+            int fragmentNumber =
+                symbol - '0';
+
+            MediaSegment sourceSegment =
+                segments[fragmentNumber - 1];
 
             CopyMediaSegment(
                 sourceSegment,
                 Timecode.FromNanos(cursor),
                 multiplier);
 
-            cursor += fragmentDuration;
+            cursor += duration;
         }
     }
 
@@ -820,7 +787,27 @@ public static class PatternLibrary
 
             new PatternDefinition(
                 "Sparta Remix Chorus",
-                "11_11_111_1_1_11222_2_222_222_2_")
+                "11_11_111_1_1_11222_2_222_222_2_"),
+            
+            new PatternDefinition(
+            "Sparta Remix Epicness main part",
+            "1*__1*223*1_1_11__1_1*112_2_33331*2_1*223*1_1_111_11111111111111"),
+            
+            new PatternDefinition(
+                "Sparta Remix Epicness second part",
+                "2_2_____2__2_2222_22"),
+            
+            new PatternDefinition(
+                "Sparta Remix Chorus (32)",
+                "11_11_111_1_1_112/2/2/2/2/2/_2/2/_2/2/2/2/2/2/_2/2/2/2/2/2/_2/2/_"),
+            
+            new PatternDefinition(
+            "Sparta Remix madness",
+            "1*______________2*______________1*______________2*______________1*______2*______1*______2*______1*__2*__1*__2*__1*__1*__1*__1111"),
+            
+            new PatternDefinition(
+            "KingSpartaX37 madness (no pitching)",
+            "1/1/1/1/1/1/1/1/2/_/2/_/2/_/2/_/3/3/3/3/3/3/3/3/3/_/3/_/3/3/3/3/4/_/4/_/4/4/4/_/4/_/4/_/4/4/4/_/5**6/6/6/6/6/6/6/6/1/1/1/1/1/1/1/1/2/_/2/_/2/_/2/_/3/3/3/3/3/3/3/3/3/_/3/_/3/3/3/3/4/_/4/_/4/4/4/_/4/_/4/_/4/4/4/_/5**6/6/6/6/6/6/6/6/1*1*11112*2*22221*1*11112*2*22221*112*221*112*221122112211221111")
         };
     }
 }
@@ -836,6 +823,7 @@ public class PatternSelectorForm : Form
     private TextBox patternTextBox;
     private Button insertButton;
     private Button cancelButton;
+    private Button helpButton;
 
     /// <summary>
     /// Creates the pattern selection dialog.
@@ -903,13 +891,25 @@ public class PatternSelectorForm : Form
             new Label
             {
                 Text =
-                    "1-4: fragment; _: skip; *: double; /: halve",
+                    "1-9: fragment; _: skip; *: double; /: halve",
                 Left = 200,
                 Top = 76,
                 Width = 320,
                 Height = 30
             };
 
+        helpButton =
+            new Button
+            {
+                Text = "Help",
+                Left = 15,
+                Top = 125,
+                Width = 95
+            };
+
+        helpButton.Click +=
+            HelpButton_Click;
+        
         insertButton =
             new Button
             {
@@ -946,6 +946,7 @@ public class PatternSelectorForm : Form
         Controls.Add(presetComboBox);
         Controls.Add(patternTextBox);
         Controls.Add(hintLabel);
+        Controls.Add(helpButton);
         Controls.Add(insertButton);
         Controls.Add(cancelButton);
 
@@ -1050,6 +1051,26 @@ public class PatternSelectorForm : Form
         }
 
         return !String.IsNullOrEmpty(pattern);
+    }
+    
+    /// <summary>
+    /// Opens the pattern notation help window.
+    /// </summary>
+    /// <param name="sender">
+    /// Event source.
+    /// </param>
+    /// <param name="e">
+    /// Event arguments.
+    /// </param>
+    private void HelpButton_Click(
+        object sender,
+        EventArgs e)
+    {
+        using (PatternHelpForm helpForm =
+               new PatternHelpForm())
+        {
+            helpForm.ShowDialog(this);
+        }
     }
 }
 
@@ -1156,5 +1177,119 @@ public class BpmInputForm : Form
         Bpm =
             Convert.ToDouble(
                 bpmInput.Value);
+    }
+}
+
+/// <summary>
+/// Displays documentation for the pattern notation.
+/// </summary>
+public class PatternHelpForm : Form
+{
+    private TextBox helpTextBox;
+    private Button closeButton;
+
+    /// <summary>
+    /// Creates the pattern help window.
+    /// </summary>
+    public PatternHelpForm()
+    {
+        Text = "Pattern Help";
+        Width = 720;
+        Height = 560;
+        StartPosition =
+            FormStartPosition.CenterParent;
+        FormBorderStyle =
+            FormBorderStyle.Sizable;
+        MinimizeBox = false;
+        MaximizeBox = true;
+
+        helpTextBox =
+            new TextBox
+            {
+                Left = 10,
+                Top = 10,
+                Width = 680,
+                Height = 450,
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                WordWrap = false,
+                Font = new System.Drawing.Font(
+                    "Consolas",
+                    10.0f),
+                Text =
+                    "CHORUS GENERATOR PATTERN NOTATION\r\n" +
+                    "\r\n" +
+                    "A pattern describes how selected media fragments\r\n" +
+                    "are copied to the timeline.\r\n" +
+                    "\r\n" +
+                    "FRAGMENT NUMBERS\r\n" +
+                    "\r\n" +
+                    "A fragment number cannot exceed 9.\r\n" +
+                    "A pattern cannot reference more fragments than are detected.\r\n" +
+                    "Valid fragment numbers: 1-9.\r\n" +
+                    "\r\n" +
+                    "Fragments are numbered from left to right on the timeline.\r\n" +
+                    "A fragment may contain audio, video, or both.\r\n" +
+                    "\r\n" +
+                    "SKIP SYMBOL\r\n" +
+                    "\r\n" +
+                    "_  Skip one base grid step without inserting media.\r\n" +
+                    "\r\n" +
+                    "Examples:\r\n" +
+                    "1_2_       Copy fragment 1, skip, copy fragment 2, skip.\r\n" +
+                    "1__2       Copy fragment 1, skip twice, copy fragment 2.\r\n" +
+                    "1234       Copy fragments 1, 2, 3, and 4 consecutively.\r\n" +
+                    "\r\n" +
+                    "DURATION MODIFIERS\r\n" +
+                    "\r\n" +
+                    "*  Double the duration of the preceding fragment.\r\n" +
+                    "/  Halve the duration of the preceding fragment.\r\n" +
+                    "\r\n" +
+                    "Modifiers may be repeated:\r\n" +
+                    "1*         2 times the base duration.\r\n" +
+                    "1**        4 times the base duration.\r\n" +
+                    "1***       8 times the base duration.\r\n" +
+                    "1/         1/2 of the base duration.\r\n" +
+                    "1//        1/4 of the base duration.\r\n" +
+                    "\r\n" +
+                    "Modifiers are applied from left to right and may be mixed:\r\n" +
+                    "1*/         Double, then halve: effective multiplier 1.\r\n" +
+                    "1**/        Double twice, then halve: effective multiplier 2.\r\n" +
+                    "1/*/        Halve, double, then halve: effective multiplier 1/2.\r\n" +
+                    "\r\n" +
+                    "VALID PATTERN SYMBOLS\r\n" +
+                    "\r\n" +
+                    "1 2 3 4 5 6 7 8 9 _ * /\r\n" +
+                    "\r\n" +
+                    "A modifier must follow a fragment number.\r\n" +
+                    "A pattern cannot be empty.\r\n" +
+                    "A fragment number cannot exceed the number of detected fragments.\r\n" +
+                    "\r\n" +
+                    "BPM AND GRID\r\n" +
+                    "\r\n" +
+                    "The script reads BPM and time signature from the VEGAS ruler.\r\n" +
+                    "The base grid is calculated from the project BPM.\r\n" +
+                    "\r\n" +
+                    "The source events are copied according to the pattern.\r\n" +
+                    "After successful insertion, the original source events are removed.\r\n"
+            };
+
+        closeButton =
+            new Button
+            {
+                Text = "Close",
+                Left = 595,
+                Top = 475,
+                Width = 95,
+                DialogResult =
+                    DialogResult.OK
+            };
+
+        Controls.Add(helpTextBox);
+        Controls.Add(closeButton);
+
+        AcceptButton = closeButton;
+        CancelButton = closeButton;
     }
 }
