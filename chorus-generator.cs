@@ -48,7 +48,7 @@ public class EntryPoint
                 return;
             }
 
-            if (segments.Count > 9)
+            if (segments.Count > 35)
             {
                 MessageBox.Show(
                     "Select no more than nine media fragments.",
@@ -68,6 +68,9 @@ public class EntryPoint
                     return;
             }
 
+            /*string expandedPattern =
+                PatternRegexExpander.Expand(pattern);
+            */
             ValidatePattern(
                 pattern,
                 segments.Count);
@@ -400,7 +403,7 @@ public class EntryPoint
                     symbol +
                     "' at position " +
                     index +
-                    ". Allowed symbols: 1-9, _, * and /.");
+                    ". Allowed symbols: 1-Z, _, * and /.");
             }
 
             if (symbol >= '1' &&
@@ -408,6 +411,23 @@ public class EntryPoint
             {
                 int fragmentNumber =
                     symbol - '0';
+
+                if (fragmentNumber > fragmentCount)
+                {
+                    throw new ArgumentException(
+                        "The pattern references fragment " +
+                        fragmentNumber +
+                        ", but only " +
+                        fragmentCount +
+                        " fragment(s) are available.");
+                }
+            }
+            
+            if (symbol >= 'A' &&
+                symbol <= 'Z')
+            {
+                int fragmentNumber =
+                    symbol - 'A' + 10;
 
                 if (fragmentNumber > fragmentCount)
                 {
@@ -891,7 +911,7 @@ public class PatternSelectorForm : Form
             new Label
             {
                 Text =
-                    "1-9: fragment; _: skip; *: double; /: halve",
+                    "1-Z: fragment; _: skip; *: double; /: halve",
                 Left = 200,
                 Top = 76,
                 Width = 320,
