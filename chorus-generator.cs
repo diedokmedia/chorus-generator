@@ -48,7 +48,7 @@ public class EntryPoint
                 return;
             }
 
-            if (segments.Count > 35)
+            if (segments.Count > 9)
             {
                 MessageBox.Show(
                     "Select no more than nine media fragments.",
@@ -423,7 +423,7 @@ public class EntryPoint
                 }
             }
             
-            if (symbol >= 'A' &&
+            /*if (symbol >= 'A' &&
                 symbol <= 'Z')
             {
                 int fragmentNumber =
@@ -439,7 +439,7 @@ public class EntryPoint
                         " fragment(s) are available.");
                 }
             }
-
+            */
             index++;
 
             while (index < pattern.Length &&
