@@ -1,6 +1,7 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Text;
 using System.Windows.Forms;
 using ScriptPortal.Vegas;
 
@@ -25,6 +26,21 @@ public class EntryPoint
     private const int BASE_GRID_DIVISIONS = 16;
 
     /// <summary>
+    /// Maximum number of fragments supported (0-9 = skip/1-9; A-Z = 10-35).
+    /// </summary>
+    private const int MAX_FRAGMENTS = 35;
+
+    /// <summary>
+    /// Maximum allowed repetition count for a single <c>{n}</c> construct.
+    /// </summary>
+    private const int MAX_REPETITION = 10000;
+
+    /// <summary>
+    /// Maximum allowed length of the expanded pattern.
+    /// </summary>
+    private const int MAX_EXPANDED_LENGTH = 1000000;
+
+    /// <summary>
     /// Main entry point called by VEGAS.
     /// </summary>
     /// <param name="vegas">
@@ -40,7 +56,7 @@ public class EntryPoint
             if (segments.Count == 0)
             {
                 MessageBox.Show(
-                    "Select one to four audio or video fragments.",
+                    "Select one or more audio or video fragments.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
@@ -48,10 +64,12 @@ public class EntryPoint
                 return;
             }
 
-            if (segments.Count > 9)
+            if (segments.Count > MAX_FRAGMENTS)
             {
                 MessageBox.Show(
-                    "Select no more than nine media fragments.",
+                    "Select no more than " +
+                    MAX_FRAGMENTS +
+                    " media fragments.",
                     "Chorus Generator",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning);
@@ -68,12 +86,25 @@ public class EntryPoint
                     return;
             }
 
-            /*string expandedPattern =
-                PatternRegexExpander.Expand(pattern);
-            */
-            ValidatePattern(
-                pattern,
-                segments.Count);
+            string expandedPattern;
+
+            try
+            {
+                expandedPattern =
+                    PreparePattern(
+                        pattern,
+                        segments.Count);
+            }
+            catch (ArgumentException ex)
+            {
+                MessageBox.Show(
+                    ex.Message,
+                    "Chorus Generator — Invalid Pattern",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+
+                return;
+            }
 
             double bpm =
                 GetProjectBpm(vegas);
@@ -87,7 +118,7 @@ public class EntryPoint
                 InsertPattern(
                     segments,
                     baseStep,
-                    pattern);
+                    expandedPattern);
 
                 RemoveSourceEvents(
                     vegas,
@@ -108,16 +139,14 @@ public class EntryPoint
         }
     }
 
+    // -----------------------------------------------------------------
+    // Fragment discovery
+    // -----------------------------------------------------------------
+
     /// <summary>
     /// Finds selected media fragments and expands each fragment
     /// to include overlapping audio and video events.
     /// </summary>
-    /// <param name="vegas">
-    /// Active VEGAS application.
-    /// </param>
-    /// <returns>
-    /// Selected media fragments ordered from left to right.
-    /// </returns>
     private List<MediaSegment> FindSelectedMediaSegments(
         Vegas vegas)
     {
@@ -227,43 +256,8 @@ public class EntryPoint
     }
 
     /// <summary>
-    /// Finds a fragment overlapping a selected event.
-    /// </summary>
-    /// <param name="segments">
-    /// Existing media fragments.
-    /// </param>
-    /// <param name="trackEvent">
-    /// Selected media event.
-    /// </param>
-    /// <returns>
-    /// Overlapping fragment or null.
-    /// </returns>
-    private MediaSegment FindOverlappingSegment(
-        List<MediaSegment> segments,
-        TrackEvent trackEvent)
-    {
-        foreach (MediaSegment segment in segments)
-        {
-            bool overlaps =
-                trackEvent.Start.Nanos < segment.End.Nanos &&
-                trackEvent.End.Nanos > segment.Start.Nanos;
-
-            if (overlaps)
-                return segment;
-        }
-
-        return null;
-    }
-
-    /// <summary>
     /// Adds every audio and video event overlapping a fragment.
     /// </summary>
-    /// <param name="vegas">
-    /// Active VEGAS application.
-    /// </param>
-    /// <param name="segment">
-    /// Fragment to expand.
-    /// </param>
     private void AddOverlappingEvents(
         Vegas vegas,
         MediaSegment segment)
@@ -320,15 +314,10 @@ public class EntryPoint
             });
     }
 
-    /// <summary>
-    /// Gets BPM from the VEGAS project ruler.
-    /// </summary>
-    /// <param name="vegas">
-    /// Active VEGAS application.
-    /// </param>
-    /// <returns>
-    /// Project BPM or the default BPM if the value is invalid.
-    /// </returns>
+    // -----------------------------------------------------------------
+    // BPM / grid
+    // -----------------------------------------------------------------
+
     private double GetProjectBpm(Vegas vegas)
     {
         double bpm =
@@ -340,15 +329,6 @@ public class EntryPoint
         return DEFAULT_BPM;
     }
 
-    /// <summary>
-    /// Calculates the duration of one base grid step.
-    /// </summary>
-    /// <param name="bpm">
-    /// Tempo used for grid calculation.
-    /// </param>
-    /// <returns>
-    /// Duration of one base grid step.
-    /// </returns>
     private Timecode CalculateBaseGridStep(
         double bpm)
     {
@@ -370,99 +350,450 @@ public class EntryPoint
         return Timecode.FromSeconds(stepSeconds);
     }
 
+    // -----------------------------------------------------------------
+    // Pattern preparation (expansion + validation)
+    // -----------------------------------------------------------------
+
     /// <summary>
-    /// Validates a pattern and fragment references.
+    /// Expands regex-style constructs and validates the result.
     /// </summary>
-    /// <param name="pattern">
-    /// Pattern expression.
-    /// </param>
-    /// <param name="fragmentCount">
-    /// Number of detected fragments.
-    /// </param>
-    private void ValidatePattern(
-        string pattern,
+    private string PreparePattern(
+        string rawPattern,
         int fragmentCount)
     {
-        if (String.IsNullOrEmpty(pattern))
+        if (String.IsNullOrEmpty(rawPattern))
         {
             throw new ArgumentException(
                 "The pattern cannot be empty.");
         }
 
+        string expanded =
+            ExpandRegex(rawPattern);
+
+        ValidateExpandedPattern(
+            expanded,
+            fragmentCount);
+
+        return expanded;
+    }
+
+    /// <summary>
+    /// Expands deterministic regex-style constructs <c>(...)</c> and
+    /// <c>{n}</c> into a flat pattern string.
+    /// </summary>
+    private string ExpandRegex(string pattern)
+    {
+        int position = 0;
+
+        string result =
+            ParseSequence(
+                pattern,
+                ref position,
+                false);
+
+        if (position != pattern.Length)
+        {
+            throw new ArgumentException(
+                "Unexpected characters after position " +
+                position +
+                ".");
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Recursively parses a pattern sequence until the end of input or
+    /// a closing parenthesis.
+    /// </summary>
+    private string ParseSequence(
+        string pattern,
+        ref int position,
+        bool insideGroup)
+    {
+        StringBuilder result =
+            new StringBuilder();
+
+        while (position < pattern.Length)
+        {
+            char symbol =
+                pattern[position];
+
+            if (symbol == ')')
+            {
+                if (!insideGroup)
+                {
+                    throw new ArgumentException(
+                        "Unmatched ')' at position " +
+                        position +
+                        ".");
+                }
+
+                return result.ToString();
+            }
+
+            string atom;
+            bool atomFromGroup = false;
+
+            if (symbol == '(')
+            {
+                position++;
+
+                string inner =
+                    ParseSequence(
+                        pattern,
+                        ref position,
+                        true);
+
+                if (position >= pattern.Length ||
+                    pattern[position] != ')')
+                {
+                    throw new ArgumentException(
+                        "Missing ')' at end of pattern.");
+                }
+
+                position++;
+                atom = inner;
+                atomFromGroup = true;
+            }
+            else if (symbol == '{')
+            {
+                throw new ArgumentException(
+                    "'{' at position " +
+                    position +
+                    " must follow an atom (fragment, skip or group).");
+            }
+            else if (symbol == '}')
+            {
+                throw new ArgumentException(
+                    "Unmatched '}' at position " +
+                    position +
+                    ".");
+            }
+            else if (symbol == '*' || symbol == '/')
+            {
+                throw new ArgumentException(
+                    "Duration modifier '" +
+                    symbol +
+                    "' at position " +
+                    position +
+                    " must directly follow a fragment or skip symbol.");
+            }
+            else if (IsAtomChar(symbol))
+            {
+                StringBuilder atomBuilder =
+                    new StringBuilder();
+
+                atomBuilder.Append(symbol);
+                position++;
+
+                while (position < pattern.Length &&
+                       (pattern[position] == '*' ||
+                        pattern[position] == '/'))
+                {
+                    atomBuilder.Append(pattern[position]);
+                    position++;
+                }
+
+                atom = atomBuilder.ToString();
+            }
+            else if (char.IsWhiteSpace(symbol))
+            {
+                position++;
+                continue;
+            }
+            else
+            {
+                throw new ArgumentException(
+                    "Invalid character '" +
+                    symbol +
+                    "' at position " +
+                    position +
+                    ". Allowed symbols: 0-9, A-Z, a-z, _, *, /, (, ), {, }.");
+            }
+
+            // Handle any number of consecutive {n} repetitions.
+            bool hadRepetition = false;
+
+            while (position < pattern.Length &&
+                   pattern[position] == '{')
+            {
+                int count =
+                    ParseRepetitionCount(
+                        pattern,
+                        ref position);
+
+                atom =
+                    RepeatString(
+                        atom,
+                        count);
+
+                hadRepetition = true;
+            }
+
+            result.Append(atom);
+
+            // A duration modifier cannot follow a group or repetition.
+            if (position < pattern.Length &&
+                (pattern[position] == '*' ||
+                 pattern[position] == '/'))
+            {
+                if (hadRepetition)
+                {
+                    throw new ArgumentException(
+                        "Duration modifier '" +
+                        pattern[position] +
+                        "' at position " +
+                        position +
+                        " cannot follow a repetition count. " +
+                        "Place it before the count (e.g., '1*{2}' instead of '1{2}*').");
+                }
+
+                if (atomFromGroup)
+                {
+                    throw new ArgumentException(
+                        "Duration modifier '" +
+                        pattern[position] +
+                        "' at position " +
+                        position +
+                        " cannot follow a group. " +
+                        "Place it inside the group (e.g., '(1*2)' instead of '(12)*').");
+                }
+            }
+        }
+
+        if (insideGroup)
+        {
+            throw new ArgumentException(
+                "Missing ')' at end of pattern.");
+        }
+
+        return result.ToString();
+    }
+
+    /// <summary>
+    /// Parses a <c>{n}</c> repetition count.
+    /// </summary>
+    private int ParseRepetitionCount(
+        string pattern,
+        ref int position)
+    {
+        // pattern[position] == '{'
+        int braceStart = position;
+        position++;
+
+        int start = position;
+
+        while (position < pattern.Length &&
+               pattern[position] >= '0' &&
+               pattern[position] <= '9')
+        {
+            position++;
+        }
+
+        if (start == position)
+        {
+            throw new ArgumentException(
+                "Missing repetition count after '{' at position " +
+                braceStart +
+                ".");
+        }
+
+        string countText =
+            pattern.Substring(
+                start,
+                position - start);
+
+        int count;
+
+        if (!int.TryParse(countText, out count))
+        {
+            throw new ArgumentException(
+                "Invalid repetition count '" +
+                countText +
+                "'.");
+        }
+
+        if (count <= 0)
+        {
+            throw new ArgumentException(
+                "Repetition count must be positive (got " +
+                count +
+                ").");
+        }
+
+        if (count > MAX_REPETITION)
+        {
+            throw new ArgumentException(
+                "Repetition count " +
+                count +
+                " exceeds the maximum of " +
+                MAX_REPETITION +
+                ".");
+        }
+
+        if (position >= pattern.Length ||
+            pattern[position] != '}')
+        {
+            if (position < pattern.Length &&
+                pattern[position] == ',')
+            {
+                throw new ArgumentException(
+                    "Non-deterministic repetition '{n,m}' at position " +
+                    braceStart +
+                    " is not supported. Use '{n}' for exact repetition.");
+            }
+
+            throw new ArgumentException(
+                "Missing '}' for repetition starting at position " +
+                braceStart +
+                ".");
+        }
+
+        position++;
+        return count;
+    }
+
+    /// <summary>
+    /// Repeats a string a given number of times with a size guard.
+    /// </summary>
+    private string RepeatString(
+        string value,
+        int count)
+    {
+        long totalLength =
+            (long)value.Length * count;
+
+        if (totalLength > MAX_EXPANDED_LENGTH)
+        {
+            throw new ArgumentException(
+                "The expanded pattern is too large (limit " +
+                MAX_EXPANDED_LENGTH +
+                " symbols).");
+        }
+
+        if (count == 0 || value.Length == 0)
+            return String.Empty;
+
+        if (count == 1)
+            return value;
+
+        StringBuilder builder =
+            new StringBuilder((int)totalLength);
+
+        for (int i = 0; i < count; i++)
+            builder.Append(value);
+
+        return builder.ToString();
+    }
+
+    // -----------------------------------------------------------------
+    // Character classification
+    // -----------------------------------------------------------------
+
+    /// <summary>
+    /// Returns true if the character can begin an atom.
+    /// </summary>
+    private bool IsAtomChar(char symbol)
+    {
+        return symbol == '_' ||
+               (symbol >= '0' && symbol <= '9') ||
+               (symbol >= 'A' && symbol <= 'Z') ||
+               (symbol >= 'a' && symbol <= 'z');
+    }
+
+    /// <summary>
+    /// Returns true if the character denotes a skip/rest.
+    /// </summary>
+    private bool IsSkip(char symbol)
+    {
+        return symbol == '_' || symbol == '0';
+    }
+
+    /// <summary>
+    /// Maps a fragment character to a 1-based fragment index.
+    /// Returns -1 if the character is not a fragment reference.
+    /// </summary>
+    private int GetFragmentIndex(char symbol)
+    {
+        if (symbol >= '1' && symbol <= '9')
+            return symbol - '0';
+
+        if (symbol >= 'A' && symbol <= 'Z')
+            return symbol - 'A' + 10;
+
+        if (symbol >= 'a' && symbol <= 'z')
+            return symbol - 'a' + 10;
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Returns a human-readable fragment name.
+    /// </summary>
+    private string GetFragmentName(int fragmentIndex)
+    {
+        if (fragmentIndex >= 1 && fragmentIndex <= 9)
+            return fragmentIndex.ToString();
+
+        if (fragmentIndex >= 10 && fragmentIndex <= 35)
+            return ((char)('A' + fragmentIndex - 10)).ToString();
+
+        return "?";
+    }
+
+    /// <summary>
+    /// Validates an expanded pattern against the available fragment count.
+    /// </summary>
+    private void ValidateExpandedPattern(
+        string expanded,
+        int fragmentCount)
+    {
         int index = 0;
 
-        while (index < pattern.Length)
+        while (index < expanded.Length)
         {
-            char symbol = pattern[index];
+            char symbol = expanded[index];
 
-            if (symbol != '_' &&
-                (symbol < '1' || symbol > '9'))
+            bool isSkip = IsSkip(symbol);
+            int fragmentIndex = GetFragmentIndex(symbol);
+
+            if (!isSkip && fragmentIndex < 0)
             {
                 throw new ArgumentException(
                     "Invalid symbol '" +
                     symbol +
                     "' at position " +
                     index +
-                    ". Allowed symbols: 1-Z, _, * and /.");
+                    " in the expanded pattern.");
             }
 
-            if (symbol >= '1' &&
-                symbol <= '9')
+            if (fragmentIndex > 0 &&
+                fragmentIndex > fragmentCount)
             {
-                int fragmentNumber =
-                    symbol - '0';
-
-                if (fragmentNumber > fragmentCount)
-                {
-                    throw new ArgumentException(
-                        "The pattern references fragment " +
-                        fragmentNumber +
-                        ", but only " +
-                        fragmentCount +
-                        " fragment(s) are available.");
-                }
+                throw new ArgumentException(
+                    "The pattern references fragment " +
+                    GetFragmentName(fragmentIndex) +
+                    ", but only " +
+                    fragmentCount +
+                    " fragment(s) are available.");
             }
-            
-            /*if (symbol >= 'A' &&
-                symbol <= 'Z')
-            {
-                int fragmentNumber =
-                    symbol - 'A' + 10;
 
-                if (fragmentNumber > fragmentCount)
-                {
-                    throw new ArgumentException(
-                        "The pattern references fragment " +
-                        fragmentNumber +
-                        ", but only " +
-                        fragmentCount +
-                        " fragment(s) are available.");
-                }
-            }
-            */
             index++;
 
-            while (index < pattern.Length &&
-                   (pattern[index] == '*' ||
-                    pattern[index] == '/'))
+            while (index < expanded.Length &&
+                   (expanded[index] == '*' ||
+                    expanded[index] == '/'))
             {
                 index++;
             }
         }
     }
 
-    /// <summary>
-    /// Calculates a pattern duration multiplier.
-    /// </summary>
-    /// <param name="asteriskCount">
-    /// Number of asterisk modifiers.
-    /// </param>
-    /// <param name="slashCount">
-    /// Number of slash modifiers.
-    /// </param>
-    /// <returns>
-    /// Duration multiplier.
-    /// </returns>
+    // -----------------------------------------------------------------
+    // Pattern insertion
+    // -----------------------------------------------------------------
+
     private double CalculateMultiplier(
         int asteriskCount,
         int slashCount)
@@ -473,42 +804,33 @@ public class EntryPoint
     }
 
     /// <summary>
-    /// Inserts copies according to the pattern.
+    /// Inserts copies according to the expanded pattern.
     /// </summary>
-    /// <param name="segments">
-    /// Source media fragments.
-    /// </param>
-    /// <param name="baseStep">
-    /// Duration of one base grid step.
-    /// </param>
-    /// <param name="pattern">
-    /// Pattern expression.
-    /// </param>
     private void InsertPattern(
         List<MediaSegment> segments,
         Timecode baseStep,
-        string pattern)
+        string expandedPattern)
     {
         long cursor =
             segments[0].Start.Nanos;
 
         int index = 0;
 
-        while (index < pattern.Length)
+        while (index < expandedPattern.Length)
         {
             char symbol =
-                pattern[index];
+                expandedPattern[index];
 
             index++;
 
             int asteriskCount = 0;
             int slashCount = 0;
 
-            while (index < pattern.Length &&
-                   (pattern[index] == '*' ||
-                    pattern[index] == '/'))
+            while (index < expandedPattern.Length &&
+                   (expandedPattern[index] == '*' ||
+                    expandedPattern[index] == '/'))
             {
-                if (pattern[index] == '*')
+                if (expandedPattern[index] == '*')
                     asteriskCount++;
                 else
                     slashCount++;
@@ -531,17 +853,26 @@ public class EntryPoint
                     "The calculated duration is invalid.");
             }
 
-            if (symbol == '_')
+            if (IsSkip(symbol))
             {
                 cursor += duration;
                 continue;
             }
 
-            int fragmentNumber =
-                symbol - '0';
+            int fragmentIndex =
+                GetFragmentIndex(symbol);
+
+            if (fragmentIndex <= 0 ||
+                fragmentIndex > segments.Count)
+            {
+                throw new InvalidOperationException(
+                    "Fragment reference '" +
+                    GetFragmentName(fragmentIndex) +
+                    "' is out of range.");
+            }
 
             MediaSegment sourceSegment =
-                segments[fragmentNumber - 1];
+                segments[fragmentIndex - 1];
 
             CopyMediaSegment(
                 sourceSegment,
@@ -552,18 +883,6 @@ public class EntryPoint
         }
     }
 
-    /// <summary>
-    /// Copies every audio and video event in a media fragment.
-    /// </summary>
-    /// <param name="sourceSegment">
-    /// Source media fragment.
-    /// </param>
-    /// <param name="destinationStart">
-    /// Start position of the copy.
-    /// </param>
-    /// <param name="multiplier">
-    /// Relative duration and position multiplier.
-    /// </param>
     private void CopyMediaSegment(
         MediaSegment sourceSegment,
         Timecode destinationStart,
@@ -609,21 +928,6 @@ public class EntryPoint
         }
     }
 
-    /// <summary>
-    /// Sets the source offset of a copied take.
-    /// </summary>
-    /// <param name="sourceEvent">
-    /// Source media event.
-    /// </param>
-    /// <param name="copy">
-    /// Copied media event.
-    /// </param>
-    /// <param name="sourceStart">
-    /// Source fragment start.
-    /// </param>
-    /// <param name="multiplier">
-    /// Relative offset multiplier.
-    /// </param>
     private void SetCopyTakeOffset(
         TrackEvent sourceEvent,
         TrackEvent copy,
@@ -657,15 +961,6 @@ public class EntryPoint
                     multiplier));
     }
 
-    /// <summary>
-    /// Removes original source events after copies are inserted.
-    /// </summary>
-    /// <param name="vegas">
-    /// Active VEGAS application.
-    /// </param>
-    /// <param name="segments">
-    /// Source media fragments.
-    /// </param>
     private void RemoveSourceEvents(
         Vegas vegas,
         List<MediaSegment> segments)
@@ -717,19 +1012,9 @@ public class EntryPoint
 /// </summary>
 public class MediaSegment
 {
-    /// <summary>
-    /// Fragment start position.
-    /// </summary>
     public Timecode Start;
-
-    /// <summary>
-    /// Fragment end position.
-    /// </summary>
     public Timecode End;
 
-    /// <summary>
-    /// Overlapping audio and video events.
-    /// </summary>
     public List<TrackEvent> Events =
         new List<TrackEvent>();
 }
@@ -739,21 +1024,9 @@ public class MediaSegment
 /// </summary>
 public class PatternDefinition
 {
-    /// <summary>
-    /// Pattern display name.
-    /// </summary>
     public string Name { get; private set; }
-
-    /// <summary>
-    /// Pattern expression.
-    /// </summary>
     public string Value { get; private set; }
 
-    /// <summary>
-    /// Creates a pattern definition.
-    /// </summary>
-    /// <param name="name">Display name.</param>
-    /// <param name="value">Pattern expression.</param>
     public PatternDefinition(
         string name,
         string value)
@@ -762,12 +1035,6 @@ public class PatternDefinition
         Value = value;
     }
 
-    /// <summary>
-    /// Returns the pattern name.
-    /// </summary>
-    /// <returns>
-    /// Pattern name.
-    /// </returns>
     public override string ToString()
     {
         return Name;
@@ -779,12 +1046,6 @@ public class PatternDefinition
 /// </summary>
 public static class PatternLibrary
 {
-    /// <summary>
-    /// Gets built-in patterns.
-    /// </summary>
-    /// <returns>
-    /// Pattern definitions.
-    /// </returns>
     public static List<PatternDefinition> GetPatterns()
     {
         return new List<PatternDefinition>
@@ -805,29 +1066,49 @@ public static class PatternLibrary
                 "Four fragments with skips",
                 "1_2_3_4_"),
 
+            // ---- Regex-style demos ----
+
+            new PatternDefinition(
+                "Regex demo: (12){4}",
+                "(12){4}"),
+
+            new PatternDefinition(
+                "Regex demo: 1{8}",
+                "1{8}"),
+
+            new PatternDefinition(
+                "Regex demo: (1_2_){2}",
+                "(1_2_){2}"),
+
+            new PatternDefinition(
+                "Regex demo: (12*){2}",
+                "(12*){2}"),
+
+            // ---- Existing Sparta set ----
+
             new PatternDefinition(
                 "Sparta Remix Chorus",
                 "11_11_111_1_1_11222_2_222_222_2_"),
-            
+
             new PatternDefinition(
-            "Sparta Remix Epicness main part",
-            "1*__1*223*1_1_11__1_1*112_2_33331*2_1*223*1_1_111_11111111111111"),
-            
+                "Sparta Remix Epicness main part",
+                "1*__1*223*1_1_11__1_1*112_2_33331*2_1*223*1_1_111_11111111111111"),
+
             new PatternDefinition(
                 "Sparta Remix Epicness second part",
                 "2_2_____2__2_2222_22"),
-            
+
             new PatternDefinition(
                 "Sparta Remix Chorus (32)",
                 "11_11_111_1_1_112/2/2/2/2/2/_2/2/_2/2/2/2/2/2/_2/2/2/2/2/2/_2/2/_"),
-            
+
             new PatternDefinition(
-            "Sparta Remix madness",
-            "1*______________2*______________1*______________2*______________1*______2*______1*______2*______1*__2*__1*__2*__1*__1*__1*__1111"),
-            
+                "Sparta Remix madness",
+                "1*______________2*______________1*______________2*______________1*______2*______1*______2*______1*__2*__1*__2*__1*__1*__1*__1111"),
+
             new PatternDefinition(
-            "KingSpartaX37 madness (no pitching)",
-            "1/1/1/1/1/1/1/1/2/_/2/_/2/_/2/_/3/3/3/3/3/3/3/3/3/_/3/_/3/3/3/3/4/_/4/_/4/4/4/_/4/_/4/_/4/4/4/_/5**6/6/6/6/6/6/6/6/1/1/1/1/1/1/1/1/2/_/2/_/2/_/2/_/3/3/3/3/3/3/3/3/3/_/3/_/3/3/3/3/4/_/4/_/4/4/4/_/4/_/4/_/4/4/4/_/5**6/6/6/6/6/6/6/6/1*1*11112*2*22221*1*11112*2*22221*112*221*112*221122112211221111")
+                "KingSpartaX37 madness (no pitching)",
+                "1/1/1/1/1/1/1/1/2/_/2/_/2/_/2/_/3/3/3/3/3/3/3/3/3/_/3/_/3/3/3/3/4/_/4/_/4/4/4/_/4/_/4/_/4/4/4/_/5**6/6/6/6/6/6/6/6/1/1/1/1/1/1/1/1/2/_/2/_/2/_/2/_/3/3/3/3/3/3/3/3/3/_/3/_/3/3/3/3/4/_/4/_/4/4/4/_/4/_/4/_/4/4/4/_/5**6/6/6/6/6/6/6/6/1*1*11112*2*22221*1*11112*2*22221*112*221*112*221122112211221111")
         };
     }
 }
@@ -845,13 +1126,10 @@ public class PatternSelectorForm : Form
     private Button cancelButton;
     private Button helpButton;
 
-    /// <summary>
-    /// Creates the pattern selection dialog.
-    /// </summary>
     public PatternSelectorForm()
     {
         Text = "Chorus Generator";
-        Width = 560;
+        Width = 600;
         Height = 210;
         StartPosition =
             FormStartPosition.CenterScreen;
@@ -884,7 +1162,7 @@ public class PatternSelectorForm : Form
             {
                 Left = 200,
                 Top = 12,
-                Width = 320,
+                Width = 360,
                 DropDownStyle =
                     ComboBoxStyle.DropDownList
             };
@@ -903,7 +1181,7 @@ public class PatternSelectorForm : Form
             {
                 Left = 200,
                 Top = 48,
-                Width = 320,
+                Width = 360,
                 Enabled = false
             };
 
@@ -911,11 +1189,12 @@ public class PatternSelectorForm : Form
             new Label
             {
                 Text =
-                    "1-Z: fragment; _: skip; *: double; /: halve",
+                    "0-9, A-Z: fragment (1-35);  _ or 0: skip;  " +
+                    "*: x2;  /: x0.5;  (...){n}: repeat group n times",
                 Left = 200,
                 Top = 76,
-                Width = 320,
-                Height = 30
+                Width = 380,
+                Height = 40
             };
 
         helpButton =
@@ -929,12 +1208,12 @@ public class PatternSelectorForm : Form
 
         helpButton.Click +=
             HelpButton_Click;
-        
+
         insertButton =
             new Button
             {
                 Text = "Insert",
-                Left = 320,
+                Left = 360,
                 Top = 125,
                 Width = 95,
                 DialogResult =
@@ -945,7 +1224,7 @@ public class PatternSelectorForm : Form
             new Button
             {
                 Text = "Cancel",
-                Left = 425,
+                Left = 465,
                 Top = 125,
                 Width = 95,
                 DialogResult =
@@ -978,9 +1257,6 @@ public class PatternSelectorForm : Form
             EventArgs.Empty);
     }
 
-    /// <summary>
-    /// Handles built-in pattern mode.
-    /// </summary>
     private void PresetRadioButton_CheckedChanged(
         object sender,
         EventArgs e)
@@ -999,9 +1275,6 @@ public class PatternSelectorForm : Form
         }
     }
 
-    /// <summary>
-    /// Handles custom pattern mode.
-    /// </summary>
     private void CustomRadioButton_CheckedChanged(
         object sender,
         EventArgs e)
@@ -1016,9 +1289,6 @@ public class PatternSelectorForm : Form
         }
     }
 
-    /// <summary>
-    /// Updates the pattern field for a preset.
-    /// </summary>
     private void PresetComboBox_SelectedIndexChanged(
         object sender,
         EventArgs e)
@@ -1035,15 +1305,6 @@ public class PatternSelectorForm : Form
                 selected.Value;
     }
 
-    /// <summary>
-    /// Returns the selected or custom pattern.
-    /// </summary>
-    /// <param name="pattern">
-    /// Pattern text.
-    /// </param>
-    /// <returns>
-    /// True if the pattern is valid and non-empty.
-    /// </returns>
     public bool TryGetPattern(
         out string pattern)
     {
@@ -1072,16 +1333,7 @@ public class PatternSelectorForm : Form
 
         return !String.IsNullOrEmpty(pattern);
     }
-    
-    /// <summary>
-    /// Opens the pattern notation help window.
-    /// </summary>
-    /// <param name="sender">
-    /// Event source.
-    /// </param>
-    /// <param name="e">
-    /// Event arguments.
-    /// </param>
+
     private void HelpButton_Click(
         object sender,
         EventArgs e)
@@ -1099,19 +1351,10 @@ public class PatternSelectorForm : Form
 /// </summary>
 public class BpmInputForm : Form
 {
-    /// <summary>
-    /// Entered BPM value.
-    /// </summary>
     public double Bpm { get; private set; }
 
     private NumericUpDown bpmInput;
 
-    /// <summary>
-    /// Creates the BPM input dialog.
-    /// </summary>
-    /// <param name="defaultBpm">
-    /// Initial BPM value.
-    /// </param>
     public BpmInputForm(double defaultBpm)
     {
         Text = "Enter BPM";
@@ -1181,15 +1424,6 @@ public class BpmInputForm : Form
         CancelButton = cancelButton;
     }
 
-    /// <summary>
-    /// Stores the entered BPM.
-    /// </summary>
-    /// <param name="sender">
-    /// Event source.
-    /// </param>
-    /// <param name="e">
-    /// Event arguments.
-    /// </param>
     private void OkButton_Click(
         object sender,
         EventArgs e)
@@ -1208,14 +1442,11 @@ public class PatternHelpForm : Form
     private TextBox helpTextBox;
     private Button closeButton;
 
-    /// <summary>
-    /// Creates the pattern help window.
-    /// </summary>
     public PatternHelpForm()
     {
         Text = "Pattern Help";
-        Width = 720;
-        Height = 560;
+        Width = 780;
+        Height = 640;
         StartPosition =
             FormStartPosition.CenterParent;
         FormBorderStyle =
@@ -1228,8 +1459,8 @@ public class PatternHelpForm : Form
             {
                 Left = 10,
                 Top = 10,
-                Width = 680,
-                Height = 450,
+                Width = 740,
+                Height = 530,
                 Multiline = true,
                 ReadOnly = true,
                 ScrollBars = ScrollBars.Vertical,
@@ -1243,64 +1474,105 @@ public class PatternHelpForm : Form
                     "A pattern describes how selected media fragments\r\n" +
                     "are copied to the timeline.\r\n" +
                     "\r\n" +
-                    "FRAGMENT NUMBERS\r\n" +
+                    "FRAGMENT REFERENCES\r\n" +
                     "\r\n" +
-                    "A fragment number cannot exceed 9.\r\n" +
-                    "A pattern cannot reference more fragments than are detected.\r\n" +
-                    "Valid fragment numbers: 1-9.\r\n" +
+                    "  1-9   -> fragments 1 through 9.\r\n" +
+                    "  A-Z   -> fragments 10 through 35.\r\n" +
+                    "  a-z   -> alias for A-Z (case-insensitive).\r\n" +
                     "\r\n" +
-                    "Fragments are numbered from left to right on the timeline.\r\n" +
-                    "A fragment may contain audio, video, or both.\r\n" +
+                    "A pattern cannot reference more fragments than were\r\n" +
+                    "detected in the timeline. Up to 35 fragments are supported.\r\n" +
                     "\r\n" +
-                    "SKIP SYMBOL\r\n" +
+                    "SKIP SYMBOLS\r\n" +
                     "\r\n" +
-                    "_  Skip one base grid step without inserting media.\r\n" +
-                    "\r\n" +
-                    "Examples:\r\n" +
-                    "1_2_       Copy fragment 1, skip, copy fragment 2, skip.\r\n" +
-                    "1__2       Copy fragment 1, skip twice, copy fragment 2.\r\n" +
-                    "1234       Copy fragments 1, 2, 3, and 4 consecutively.\r\n" +
+                    "  _     -> skip one base grid step.\r\n" +
+                    "  0     -> same as '_' (alternate rest symbol).\r\n" +
                     "\r\n" +
                     "DURATION MODIFIERS\r\n" +
                     "\r\n" +
-                    "*  Double the duration of the preceding fragment.\r\n" +
-                    "/  Halve the duration of the preceding fragment.\r\n" +
+                    "  *     -> double the duration of the preceding fragment.\r\n" +
+                    "  /     -> halve the duration of the preceding fragment.\r\n" +
                     "\r\n" +
-                    "Modifiers may be repeated:\r\n" +
-                    "1*         2 times the base duration.\r\n" +
-                    "1**        4 times the base duration.\r\n" +
-                    "1***       8 times the base duration.\r\n" +
-                    "1/         1/2 of the base duration.\r\n" +
-                    "1//        1/4 of the base duration.\r\n" +
+                    "Modifiers may be repeated and mixed:\r\n" +
                     "\r\n" +
-                    "Modifiers are applied from left to right and may be mixed:\r\n" +
-                    "1*/         Double, then halve: effective multiplier 1.\r\n" +
-                    "1**/        Double twice, then halve: effective multiplier 2.\r\n" +
-                    "1/*/        Halve, double, then halve: effective multiplier 1/2.\r\n" +
+                    "  1*          x2\r\n" +
+                    "  1**         x4\r\n" +
+                    "  1/          x0.5\r\n" +
+                    "  1//         x0.25\r\n" +
+                    "  1*/         x1  (double then halve)\r\n" +
+                    "  1**/        x2\r\n" +
                     "\r\n" +
-                    "VALID PATTERN SYMBOLS\r\n" +
+                    "REGEX-STYLE EXPANSION (DETERMINISTIC SUBSET)\r\n" +
                     "\r\n" +
-                    "1 2 3 4 5 6 7 8 9 _ * /\r\n" +
+                    "  (...)       -> grouping. Used together with {n}.\r\n" +
+                    "  {n}         -> repeat the preceding atom exactly n times.\r\n" +
                     "\r\n" +
-                    "A modifier must follow a fragment number.\r\n" +
-                    "A pattern cannot be empty.\r\n" +
-                    "A fragment number cannot exceed the number of detected fragments.\r\n" +
+                    "An atom is one of:\r\n" +
+                    "  - a fragment reference (1-9, A-Z, a-z)\r\n" +
+                    "  - a skip symbol (_ or 0)\r\n" +
+                    "  - an atom with duration modifiers (e.g. 1*, 2/)\r\n" +
+                    "  - a parenthesized group ( ... )\r\n" +
+                    "\r\n" +
+                    "Examples:\r\n" +
+                    "\r\n" +
+                    "  (12){4}         -> 12121212\r\n" +
+                    "  1{8}            -> 11111111\r\n" +
+                    "  (1_2_){2}       -> 1_2_1_2_\r\n" +
+                    "  (12*){2}        -> 12*12*\r\n" +
+                    "  (1*2){2}        -> 1*21*2\r\n" +
+                    "  A{2}_B{2}       -> AAB B -> fragment 10 twice, skip, fragment 11 twice.\r\n" +
+                    "\r\n" +
+                    "Chained repetitions are allowed:\r\n" +
+                    "\r\n" +
+                    "  1{2}{3}         -> 1{6}  -> six copies of fragment 1.\r\n" +
+                    "\r\n" +
+                    "NOT SUPPORTED (non-deterministic regex features):\r\n" +
+                    "\r\n" +
+                    "  |               -> alternation would create ambiguity.\r\n" +
+                    "  ?               -> optional atom is non-deterministic.\r\n" +
+                    "  +               -> one-or-more is non-deterministic.\r\n" +
+                    "  {n,m}           -> ranges are non-deterministic.\r\n" +
+                    "  [...]           -> character classes are ambiguous.\r\n" +
+                    "  . ^ $ \\         -> not applicable to pattern generation.\r\n" +
+                    "\r\n" +
+                    "IMPORTANT: The * and / symbols ALWAYS mean duration\r\n" +
+                    "doubling/halving. They are never regex quantifiers.\r\n" +
+                    "\r\n" +
+                    "To double every fragment in a group, put * inside the group:\r\n" +
+                    "\r\n" +
+                    "  (1*2*3*){2}     -> 1*2*3*1*2*3*\r\n" +
+                    "\r\n" +
+                    "To double only the last fragment in a group, put * after it:\r\n" +
+                    "\r\n" +
+                    "  (123*){2}       -> 123*123*\r\n" +
+                    "\r\n" +
+                    "VALID EXAMPLE PATTERNS\r\n" +
+                    "\r\n" +
+                    "  1_2_                     Alternate two fragments with gaps.\r\n" +
+                    "  1234                     Four fragments consecutively.\r\n" +
+                    "  (12){4}                  Group of 12, repeated 4 times.\r\n" +
+                    "  (1_2_){2}3*              Group with skips, then doubled 3.\r\n" +
+                    "  1*__1*223*1_1_11__1_1*112_2_33331*2_1*223*1_1_111_11111111111111\r\n" +
+                    "                           (Sparta Remix Epicness main part)\r\n" +
                     "\r\n" +
                     "BPM AND GRID\r\n" +
                     "\r\n" +
-                    "The script reads BPM and time signature from the VEGAS ruler.\r\n" +
-                    "The base grid is calculated from the project BPM.\r\n" +
+                    "The script reads BPM from the VEGAS project ruler.\r\n" +
+                    "The base grid step = (60 / BPM) * 4 / 16 seconds.\r\n" +
+                    "If the project ruler returns an invalid BPM, 120 is used.\r\n" +
                     "\r\n" +
-                    "The source events are copied according to the pattern.\r\n" +
-                    "After successful insertion, the original source events are removed.\r\n"
+                    "After successful insertion the original source events\r\n" +
+                    "are removed, so only the generated pattern remains.\r\n" +
+                    "\r\n" +
+                    "The inserted copies remain selected when the script finishes.\r\n"
             };
 
         closeButton =
             new Button
             {
                 Text = "Close",
-                Left = 595,
-                Top = 475,
+                Left = 655,
+                Top = 555,
                 Width = 95,
                 DialogResult =
                     DialogResult.OK
