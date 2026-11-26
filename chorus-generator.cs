@@ -794,7 +794,7 @@ public class PatternSelectorForm : Form
     public PatternSelectorForm()
     {
         Text = "Chorus Generator";
-        Width = 600;
+        Width = 700;
         Height = 260; 
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -822,7 +822,7 @@ public class PatternSelectorForm : Form
         {
             Left = 200,
             Top = 12,
-            Width = 360,
+            Width = 450,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
 
@@ -836,16 +836,16 @@ public class PatternSelectorForm : Form
         {
             Left = 200,
             Top = 48,
-            Width = 360,
+            Width = 450,
             Enabled = false
         };
 
         Label hintLabel = new Label
         {
-            Text = "0-9, A-Z: fragment (1-35);  _ or 0: skip;  *: x2;  /: x0.5;  (...){n}: repeat group",
+            Text = "0-9, A-Z: fragment (1-35);  _ or 0: skip;  *: x2;  /: x0.5; (...){n}: repeat group",
             Left = 200,
             Top = 76,
-            Width = 380,
+            Width = 450,
             Height = 30
         };
 
@@ -853,15 +853,15 @@ public class PatternSelectorForm : Form
         {
             Text = "Generate at:",
             Left = 15,
-            Top = 100,
+            Top = 110,
             Width = 180
         };
 
         generateLocationComboBox = new ComboBox
         {
             Left = 200,
-            Top = 97,
-            Width = 360,
+            Top = 110,
+            Width = 450,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         
@@ -881,7 +881,7 @@ public class PatternSelectorForm : Form
         insertButton = new Button
         {
             Text = "Insert",
-            Left = 360,
+            Left = 450,
             Top = 170,
             Width = 95,
             DialogResult = DialogResult.OK
@@ -890,7 +890,7 @@ public class PatternSelectorForm : Form
         cancelButton = new Button
         {
             Text = "Cancel",
-            Left = 465,
+            Left = 560,
             Top = 170,
             Width = 95,
             DialogResult = DialogResult.Cancel
