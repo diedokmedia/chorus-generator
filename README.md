@@ -4,9 +4,9 @@ A VEGAS Pro Script API utility for copying selected audio and video fragments ac
 
 ## Releases
 
-The latest stable release is **0.7.0**.
+The latest stable release is **0.8.0**.
 
-Download it from the [Chorus Generator 0.7.0 release page](https://github.com/diedokmedia/chorus-generator/releases/tag/0.5.0).
+Download it from the [Chorus Generator release page](https://github.com/diedokmedia/chorus-generator/releases).
 
 ## Project Structure
 
@@ -18,7 +18,7 @@ chorus-generator/
 
 ## Installation
 
-1. Open `src/chorus-generator.cs` in VEGAS Script Editor.
+1. Open `chorus-generator.cs` in VEGAS Script Editor.
 2. Ensure `ScriptPortal.Vegas.dll` is available.
 3. Save the script.
 4. Run it through **Tools → Scripting**.
@@ -35,8 +35,7 @@ ScriptPortal.Vegas.dll
 ## Supported Selection
 
 The script supports:
-
-- one to four selected media fragments;
+- 1 to 35 selected media fragments;
 - audio events;
 - video events;
 - combined audio and video selections;
@@ -44,187 +43,86 @@ The script supports:
 
 When only audio or only video is selected, the script includes all audio and video events overlapping the selected time range.
 
-Each fragment is identified by the order of its start position:
+Each fragment is identified by the order of its start position. If more than 9 fragments are selected, the numbering continues alphabetically:
 
 ```text
-1 = first fragment
-2 = second fragment
-3 = third fragment
-4 = fourth fragment
+1-9  = fragments 1 through 9
+A-Z  = fragments 10 through 35 (case-insensitive)
 ```
 
 ## BPM
 
-Add a project marker named:
+The script reads BPM directly from the VEGAS project ruler (`vegas.Project.Ruler.BeatsPerMinute`). 
 
-```text
-BPM=120
-```
+If the ruler returns an invalid value (less than or equal to zero), the script automatically falls back to the default **120 BPM**.
 
-Examples:
-
-```text
-BPM=128
-BPM=140.5
-BPM=180
-```
-
-If no valid BPM marker is found, an input dialog allows entering BPM manually.
-
-The grid calculation assumes 4/4:
-
+The grid calculation assumes 4/4 time signature:
 ```text
 quarter duration = 60 / BPM
 bar duration     = quarter duration × 4
 base grid step   = bar duration / 16
 ```
 
-At `120 BPM`, one base grid step is approximately:
-
-```text
-0.125 seconds
-```
+At `120 BPM`, one base grid step is approximately `0.125 seconds`.
 
 ## Pattern Syntax
 
 | Symbol | Meaning |
 |---|---|
-| `1`–`9` | Copy the corresponding media fragment |
-| `_` | Skip one base grid step |
+| `1`–`9`, `A`–`Z` | Copy the corresponding media fragment (1–35) |
+| `_` or `0` | Skip one base grid step |
 | `*` | Double the fragment duration |
 | `/` | Halve the fragment duration |
+| `(...)` | Grouping for regex repetition |
+| `{n}` | Repeat the preceding atom or group exactly `n` times |
 
-Modifiers may be repeated:
-
+Modifiers may be repeated and combined:
 ```text
 1*      2× duration
 1**     4× duration
-1***    8× duration
 1/      1/2 duration
-1//     1/4 duration
-1///    1/8 duration
+1*/     ×1 (double, then halve)
 ```
 
-`*` and `/` may be combined inside one fragment.
+## Regex-like Expansion
 
-Each modifier is applied sequentially:
+The script supports a deterministic subset of regular expressions for pattern compression. This allows you to create complex rhythms much faster.
 
+- Grouping `(...)` and exact repetition `{n}` are supported.
+- Nested groups are fully supported (e.g., `((1*2){2}){2}`).
+- Non-deterministic regex operators (`|`, `?`, `+`, `{n,m}`, `[...]`) are **not supported** and will throw an error, as they cannot be reliably mapped to a timeline.
+
+**Examples:**
 ```text
-1*/
+(12){4}         -> 12121212
+1{8}            -> 11111111
+(1_2_){2}       -> 1_2_1_2_
+(12*){2}        -> 12*12*
+((1*){2}(1){2}) -> 1*1*11
 ```
 
-means:
+## Generation Location
 
-```text
-double, then halve
-```
+The script provides two ways to insert the generated pattern, selectable in the UI dropdown menu:
 
-Thus, `1*/` has the effective multiplier `1`, while `1**/` has the multiplier `2`.
-
-## Pattern Grammar
-
-```text
-pattern  ::= item+
-
-item     ::= "_" | fragment
-
-fragment ::= fragmentNumber modifier*
-
-fragmentNumber ::= "1" | "2" | "3" | "4"
-
-modifier ::= "*" | "/"
-```
-
-Rules:
-
-- A pattern cannot be empty.
-- Valid symbols are `1-9`, `_`, `*`, and `/`.
-- A fragment number cannot exceed the number of detected fragments.
-- Consecutive `_` symbols represent multiple skipped steps.
-- `*` and `/` may be combined in any order.
-- Modifiers only follow a fragment number.
-
-## Regular Expressions
-
-Complete-pattern validation:
-
-```regex
-^(?:_|[1-9][*/]*)+$
-```
-
-Fragment token extraction:
-
-```regex
-[1-9][*/]*|_
-```
-*In the future, it is possible to support regular expressions from the user, but this will be in the distant future.*
-
-Example:
-
-```text
-1*/_2**/__
-```
-
-is parsed as:
-
-```text
-1*/
-_
-2**/
-_
-_
-```
-
-The regular expression validates syntax. The script additionally verifies that the referenced fragment exists:
-
-```csharp
-fragmentNumber <= segments.Count
-```
+1. **Replace selected track event(s):** 
+   The pattern is generated starting exactly at the beginning of the first selected fragment. After generation, the original selected media fragments are **removed** from the timeline.
+2. **At cursor position (keep sources):** 
+   The pattern is generated starting from the current timeline cursor (`vegas.Transport.CursorPosition`). The original selected media fragments are **preserved** on the timeline.
 
 ## Duration Calculation
 
-The effective modifier is calculated as:
-
+The effective duration multiplier is calculated as:
 ```text
-duration =
-    base grid step
-    × 2^(asteriskCount)
-    ÷ 2^(slashCount)
-```
-
-Equivalent formula:
-
-```text
-duration =
-    base grid step
-    × 2^(asteriskCount - slashCount)
+duration = base grid step × 2^(asteriskCount - slashCount)
 ```
 
 Examples:
-
 ```text
 1*     ×2
-1**    ×4
 1/     ×0.5
-1//    ×0.25
 1*/    ×1
 1**/   ×2
-1/*/   ×1
-1//**  ×1
-```
-
-Example pattern:
-
-```text
-1**/_2/
-```
-
-is interpreted as:
-
-```text
-1** = four times the base duration
-_   = skip one base step
-2/  = half the base duration
 ```
 
 ## Pattern Examples
@@ -234,101 +132,43 @@ _   = skip one base step
 12
 1234
 1_2_3_4_
+(12){4}_
 1**_2/
-1*/_2/**
-__1___2_
+(1_2_){2}3*
 11_11_111_1_1_11222_2_222_222_2_
 ```
 
 Built-in presets include:
-
 - Alternate
 - Consecutive
 - Four fragments
-- Four fragments with skips
-- Sparta Remix Chorus
+- Regex demos (e.g., `(12){4}`)
+- Various Sparta Remix patterns
 
 ## Media Copying
 
 A fragment copy includes every overlapping event:
-
 - all overlapping video events;
 - all overlapping audio events;
 - the source track of every event;
 - the relative timeline position inside the fragment.
 
-If two fragments are selected:
-
-```text
-fragment 1: audio + video
-fragment 2: audio + video
-```
-
-then:
-
-```text
-1_2_
-```
-
-copies:
-
-```text
-fragment 1
-skip
-fragment 2
-skip
-```
-
-Each copy preserves the relative audio and video positions.
-
-## Source Removal
-
-After copying, the original source events are removed.
-
-The copies remain on the timeline, and source removal is performed inside the VEGAS `UndoBlock`. The complete operation can be undone in one step.
-
-## BPM and Ruler Settings
-
-The script reads BPM directly from the VEGAS project ruler:
-
-vegas.Project.Ruler.BeatsPerMinute
-Cancelling the dialog stops the script.
-
-## Pattern Dialog
-
-The dialog supports:
-
-- built-in patterns;
-- manually entered patterns;
-- Insert and Cancel actions.
-
-Custom pattern example:
-
-```text
-1**/_2*__3//_4
-```
+Each copy preserves the relative audio and video positions. Copies are automatically selected after insertion.
 
 ## Undo Behavior
 
-Insert and source-removal operations are wrapped in:
+Insert and optional source-removal operations are wrapped in a single `UndoBlock`. The complete operation (generation and source removal) can be undone in one step.
 
-```csharp
-using (UndoBlock undo =
-    new UndoBlock("Insert media pattern " + pattern))
-{
-    // Copy media fragments
-    // Remove source events
-}
-```
+## Safety Limits
 
-This creates a single undo operation.
+To prevent the script from freezing VEGAS due to memory or processing overflow:
+- Maximum repetition count for `{n}` is **10,000**.
+- Maximum expanded pattern length is **1,000,000** symbols.
 
 ## Limitations
 
-- Supports one to four media fragments.
-- Supports audio and video events.
-- Fragment numbering follows left-to-right timeline position.
-- Audio and video events must overlap for them to belong to the same fragment.
+- Supports up to 35 media fragments.
+- Audio and video events must overlap in time to be grouped into the same fragment.
 - `*` and `/` may be mixed and are applied in written order.
-- BPM is read from `BPM=value`; otherwise manual BPM input is requested.
-- Source events are removed after copying.
+- Non-deterministic regex features (alternation, wildcards, ranges) are not supported.
+
